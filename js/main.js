@@ -47,7 +47,9 @@ async function boot() {
 }
 
 function unlockAudio() {
-  sing.ensureContext().resume().catch(() => {});
+  // not while the song is held (⏸, the lever down, a drawer): a tap must not start it (D-143)
+  const context = sing.ensureContext();
+  if (!sing.condition().held) context.resume().catch(() => {});
   sound.init(prefs.settings().sfx);
 }
 
@@ -204,7 +206,7 @@ function wireControls() {
   $("play").onclick = () => (reader.isPlaying() ? reader.pause() : reader.play());
   $("fire").addEventListener("pointerdown", (event) => {
     event.stopPropagation();
-    cockpit.lightMissile();
+    if (reader.isPlaying()) cockpit.lightMissile();
     reader.press(event);
   });
   $("fire").addEventListener("keydown", (event) => {
@@ -213,7 +215,13 @@ function wireControls() {
       reader.press(event);
     }
   });
-  // the gear lever (D-126, D-127): each tap moves it; back sets the explosion off, forward goes on
+  // the bomb's picture (D-144): the explosion and the stop, and the lever goes down with it
+  $("bomb").addEventListener("click", (event) => {
+    event.stopPropagation();
+    reader.pressBomb();
+  });
+  $("bomb").addEventListener("pointerdown", (event) => event.stopPropagation());
+  // the gear lever (D-126, D-145): each tap moves it; down sets the explosion off, up goes on
   $("gear").addEventListener("click", (event) => {
     event.stopPropagation();
     reader.toggleLever();

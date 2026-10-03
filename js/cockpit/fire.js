@@ -47,6 +47,7 @@ export function heardAt(stamp, eventMs, fallback) {
   return fallback.currentTime - (fallback.outputLatency || fallback.baseLatency || 0);
 }
 
-/** Whether any window of the list is open at song time `t` (for the white flash, ST-28). */
+/** The windows of the list that are open at song time `t` and whose target is not hit yet (for
+ * the white flash, ST-28). */
 export const openAt = (windows, t, hit = new Set()) =>
   windows.filter((window) => !hit.has(window.id) && t >= window.from && t <= window.to);

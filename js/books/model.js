@@ -3,13 +3,16 @@
 //   { key, title, author, format,
 //     chapters: [{ title, firstBlock }],
 //     blocks:   [{ kind: "text" | "heading" | "figure", chapter, page, lang,
-//                  sentences: [{ display, speech, map }], figure }],
+//                  sentences: [{ display, speech, map, ends }], figure }],
 //     endNotes: [ "底本：…", … ] }
 //
 // A sentence's `map` follows the old reader (`dbr/adapter.py` speech_of, `app/js/player.js`
 // speechToDisplay): null when the speech equals the display, else an array where
 // map[speechIndex] = displayIndex. A ruby's reading is spoken; its base is displayed, and every
-// character of the reading maps to the base's first character.
+// character of the reading maps to the base's first character. `ends` goes with `map` (null when
+// it is): ends[speechIndex] is the display index just past what that speech character shows, the
+// next character for plain text and the end of the base for a ruby's reading. A word's display
+// span runs from map[first] to ends[last], so a word with a ruby is its whole base (ED D-146).
 
 import { detectLang, sentenceRanges } from "./sentences.js";
 
@@ -31,26 +34,34 @@ export const MESSAGES = {
 
 /**
  * A displayed text and its speech, built piece by piece. `map[k]` is the display index of the
- * k-th speech character.
+ * k-th speech character, and `ends[k]` the display index just past what it shows.
  */
 export class Spoken {
   constructor() {
     this.display = "";
     this.speech = "";
     this.map = [];
+    this.ends = [];
   }
 
   /** Text that is shown and sung as written. */
   plain(text) {
-    for (let k = 0; k < text.length; k++) this.map.push(this.display.length + k);
+    for (let k = 0; k < text.length; k++) {
+      this.map.push(this.display.length + k);
+      this.ends.push(this.display.length + k + 1);
+    }
     this.display += text;
     this.speech += text;
     return this;
   }
 
-  /** A ruby: `base` is shown, `reading` is sung (every reading character maps to the base's start). */
+  /** A ruby: `base` is shown, `reading` is sung (every reading character maps to the base's start
+   * and ends at the base's end). */
   ruby(base, reading) {
-    for (let k = 0; k < reading.length; k++) this.map.push(this.display.length);
+    for (let k = 0; k < reading.length; k++) {
+      this.map.push(this.display.length);
+      this.ends.push(this.display.length + base.length);
+    }
     this.display += base;
     this.speech += reading;
     return this;
@@ -68,7 +79,7 @@ export class Spoken {
  * (a heading, D-103). Sentences are cut on the display text, and the speech is cut with them.
  */
 export function sentencesOf(spoken, lang, whole = false) {
-  const { display, speech, map } = spoken;
+  const { display, speech, map, ends } = spoken;
   let ranges;
   if (whole) {
     const start = display.length - display.trimStart().length;
@@ -87,6 +98,7 @@ export function sentencesOf(spoken, lang, whole = false) {
       display: shown,
       speech: sung,
       map: sung === shown ? null : map.slice(from, k).map((index) => index - start),
+      ends: sung === shown ? null : ends.slice(from, k).map((index) => index - start),
     });
   }
   return sentences;

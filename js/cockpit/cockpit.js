@@ -22,9 +22,11 @@ const MAX_STANDING = 6; // D-81
 const NEAR = 1.5; // seconds: a robot appears this long before its window opens (D-140)
 const BOSS_DELAY_TICKS = 150; // the boss stands before the glass after 5 s (ST-35)
 const REST_MS = 3000;
-// the console's controls, in world pixels (D-126): the missile at the lower right, the lever at the lower left
+// the console's controls, in world pixels (D-126, D-145): the missile at the lower right; at the
+// lower left the lever, and the bomb directly under it (BOMB is in text pixels, its bottom middle)
 const MISSILE = { x: 336, y: 192 },
-  LEVER = { x: 44, y: 182 };
+  LEVER = { x: 44, y: 164 },
+  BOMB = { x: 88, y: 472 };
 // the book list's scene (ST-24, D-122)
 const RUN_Y = 234, // the pixel Elena's feet, at the bottom middle, in front
   MEOW_FEET = 196, // M.E.O.W far ahead, just under the list
@@ -145,7 +147,7 @@ function build(sprites) {
   const caption = new Caption({ x: glassText.x + Math.round(glassText.w * 0.08), y: captionBottom - lines * lineHeight, w: Math.round(glassText.w * 0.84), h: lines * lineHeight, size: 24, lines });
   const main = { x: Math.round(TEXT.w * 0.2), y: 34, w: Math.round(TEXT.w * 0.6), h: Math.round(TEXT.h * 0.55) };
   const monitor = new Monitor(main, main, sprites.turn);
-  const bomb = new Bomb({ place: { x: 150, y: 418 }, flash: allowFlash, sfx: (role) => options.sfx(role) });
+  const bomb = new Bomb({ place: BOMB, flash: allowFlash, sfx: (role) => options.sfx(role) });
   // a blue sky (D-137), fitting for books from 青空文庫; the ground under the horizon as before
   const sky = ditheredGradient(WORLD.w, WORLD.h, [
     [0, "#2a6fd6"],
@@ -159,15 +161,18 @@ function build(sprites) {
   clock.start(tick, { measure: true });
 }
 
-/** The HTML laid over the frame at the places of the pictures (SD-W13): the two console buttons
- * and the list's place over the main monitor. Positions are fractions of the frame. */
+/** The HTML laid over the frame at the places of the pictures (SD-W13): the three console buttons
+ * (the missile, the lever, and the bomb under the lever) and the list's place over the main monitor. Positions are fractions of the frame. */
 function placeHtml() {
   const pct = (v, of) => `${(v / of) * 100}%`;
   const fire = document.getElementById("fire"),
     gear = document.getElementById("gear"),
+    bomb = document.getElementById("bomb"),
     list = document.getElementById("list");
   Object.assign(fire.style, { left: pct(MISSILE.x - 6, WORLD.w), top: pct(MISSILE.y - 8, WORLD.h), width: pct(52, WORLD.w), height: pct(34, WORLD.h) });
-  Object.assign(gear.style, { left: pct(LEVER.x - 14, WORLD.w), top: pct(LEVER.y - 6, WORLD.h), width: pct(28, WORLD.w), height: pct(44, WORLD.h) });
+  Object.assign(gear.style, { left: pct(LEVER.x - 16, WORLD.w), top: pct(LEVER.y - 8, WORLD.h), width: pct(32, WORLD.w), height: pct(38, WORLD.h) });
+  // the bomb's button: from under the lever to the bottom edge (the bomb grows upward from BOMB.y)
+  Object.assign(bomb.style, { left: pct(LEVER.x - 20, WORLD.w), top: pct(LEVER.y + 30, WORLD.h), width: pct(40, WORLD.w), height: pct(WORLD.h - LEVER.y - 30, WORLD.h) });
   const main = pieces.main;
   Object.assign(list.style, { left: pct(main.x + 8, TEXT.w), top: pct(main.y + 8, TEXT.h), width: pct(main.w - 16, TEXT.w), height: pct(main.h - 16, TEXT.h) });
 }
@@ -359,7 +364,7 @@ export function explode({ road = false } = {}) {
   if (road) for (const id of pieces.battle.blastRoad(lvl, tickNow)) scene.hit.add(id); // done for this block
   return done;
 }
-/** The lever is back: the road stops, while the explosion and the robots go on moving. */
+/** The lever is down: the road stops, while the explosion and the robots go on moving. */
 export function setStopped(on) {
   scene.stopped = on;
 }
@@ -495,10 +500,10 @@ function tick(n) {
   bomb.drawFlash(words, n, TEXT.w, TEXT.h);
 }
 
-/** The console's two controls (D-126): the blue missile of the launch button at the lower
- * right, which lights at a press, and the gear lever at the lower left, forward (toward the
- * user, lower on the screen) or back. Drawn from simple shapes in world pixels. */
-let leverBack = false,
+/** The console's controls (D-126, D-145): the blue missile of the launch button at the lower
+ * right, which lights at a press, and the gear lever at the lower left, up (going) or down (stop
+ * and bomb), above the bomb's picture. Drawn from simple shapes in world pixels. */
+let leverDown = false,
   leverMovedAt = -99,
   missileLitAt = -99;
 function drawConsole(f, n) {
@@ -525,33 +530,44 @@ function drawConsole(f, n) {
   f.fillRect(mx + 4, my + 10, 4, 3);
   f.fillStyle = "#ffcf3f";
   if (Math.floor(n / 3) % 2) f.fillRect(mx + 2, my + 6, 3, 2); // the flame
-  // the gear lever: a slot, a stick and a knob; forward is lower on the screen
+  // the gear lever: a slot, a stick and a knob; up is going, down is stop and bomb (D-145).
+  // The slot's ends are marked: green at the top, red at the bottom, above the bomb.
   const gx = LEVER.x,
     gy = LEVER.y,
     t = Math.min(1, (n - leverMovedAt) / 4),
-    back = leverBack ? t : 1 - t,
-    knobY = Math.round(gy + 26 - back * 20);
+    down = leverDown ? t : 1 - t,
+    knobY = Math.round(gy + 6 + down * 16);
   f.fillStyle = "#14202c";
-  f.fillRect(gx - 6, gy - 2, 12, 34);
+  f.fillRect(gx - 7, gy - 4, 14, 34);
   f.fillStyle = "#3a4a58";
-  f.fillRect(gx - 2, gy, 4, 30);
+  f.fillRect(gx - 2, gy, 4, 26);
+  f.fillStyle = "#3fe0a0";
+  f.fillRect(gx - 5, gy - 3, 10, 2);
+  f.fillStyle = "#e0402a";
+  f.fillRect(gx - 5, gy + 27, 10, 2);
+  // a dotted red line from the slot's bottom end down to the bomb: down is the bomb (D-145)
+  f.fillStyle = "#b02a3a";
+  for (let y = gy + 32; y < WORLD.h - 14; y += 4) f.fillRect(gx - 1, y, 2, 2);
   f.fillStyle = "#8a96a0";
-  f.fillRect(gx - 1, knobY, 2, gy + 30 - knobY);
-  f.fillStyle = leverBack ? "#e0402a" : "#3fe0a0";
+  f.fillRect(gx - 1, Math.min(knobY, gy + 13), 2, Math.abs(knobY - (gy + 13)) + 1); // the stick, from the slot's middle
+  f.fillStyle = leverDown ? "#e0402a" : "#3fe0a0";
   f.fillRect(gx - 5, knobY - 5, 10, 8);
   f.fillStyle = "#ffffff";
   f.fillRect(gx - 4, knobY - 4, 3, 2);
 }
-/** Move the lever: true is back (the explosion), false is forward (going on). */
-export function setLever(isBack) {
-  if (leverBack === isBack) return;
-  leverBack = isBack;
+/** Move the lever: true is down (stop and bomb), false is up (going on). */
+export function setLever(isDown) {
+  if (leverDown === isDown) return;
+  leverDown = isDown;
   leverMovedAt = tickNow;
   options.sfx("lever");
   const gear = document.getElementById("gear");
-  if (gear) gear.setAttribute("aria-pressed", String(isBack));
+  if (gear) gear.setAttribute("aria-pressed", String(isDown));
 }
-export const lever = () => leverBack;
+/** Whether the lever is down (stop and bomb). */
+export const lever = () => leverDown;
+/** The enemies shot since the last explosion. */
+export const count = () => pieces.bomb.count;
 /** The missile button lights at a press. */
 export function lightMissile() {
   missileLitAt = tickNow;
@@ -677,7 +693,7 @@ export function debug() {
     rushing: battle.enemies.filter((enemy) => enemy.rush > 0 && enemy.alive).map((enemy) => [enemy.id, Math.round(enemy.rush * 100) / 100]),
     passed: battle.enemies.filter((enemy) => enemy.passed).length,
     canShoot: !!scene.canShoot,
-    lever: leverBack ? "back" : "forward",
+    lever: leverDown ? "down" : "up",
     missileSides: battle.missiles.list.map((m) => Math.sign(m.start ? m.start.X : m.p.X)),
     leaving: battle.enemies.filter((enemy) => enemy.leftAt).length,
     queue: scene.queue.length,

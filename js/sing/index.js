@@ -234,8 +234,9 @@ function showPerf() {
 
 /** Seconds from now to the bar line `bars` bars after the one that sounded last. */
 export const secondsToBarLine = (bars) => conductor.barLine(bars) - context.currentTime;
-/** What the song is doing, for checks: { running, held, quiet }. */
-export const condition = () => ({ running: !!conductor, held, quiet });
+/** What the song is doing, for checks: { running, held, quiet, state }, `state` being the
+ * AudioContext's ("running", "suspended") or null before there is one. */
+export const condition = () => ({ running: !!conductor, held, quiet, state: context ? context.state : null });
 /** The song's clock, in seconds. */
 export const now = () => (context ? context.currentTime : 0);
 /** The song's AudioContext (for the time the user hears, SD-W10, and for the effects, SD-W12). */
