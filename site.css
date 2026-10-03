@@ -1,0 +1,79 @@
+/* ドパドパ読書リーダー (SPEC_dopa v3; ED-10). The stage is the frame of pixel layers, scaled with
+   hard edges and centered on black (SD-W11). Everything else is HTML in the pixel face (SD-W13). */
+@font-face { font-family: "DotGothic16"; src: url("vendor/fonts/DotGothic16-Regular.ttf"); }
+@font-face { font-family: "Misaki Mincho"; src: url("vendor/fonts/misaki_mincho.ttf"); }
+
+:root { --ink: #1d1a2e; --gold: #ffcf3f; --green: #3fe0a0; --panel: #0b1a16; --px: 2px; }
+html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden; }
+body { font-family: "DotGothic16", system-ui, sans-serif; -webkit-font-smoothing: none; font-smooth: never; }
+button, input { font-family: inherit; }
+
+#stage { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); touch-action: none; user-select: none; -webkit-user-select: none; }
+#stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+
+/* the console buttons lie over their pictures (D-104); the picture is the button */
+#stage .console { position: absolute; background: transparent; border: 0; padding: 0; cursor: pointer; color: #fff;
+  display: flex; align-items: flex-end; justify-content: center; }
+#stage .console:focus-visible { outline: 2px solid var(--gold); }
+#stage .card-skip { position: absolute; inset: 0; background: transparent; border: 0; cursor: pointer; }
+
+/* the book list over the main monitor (V-06, ST-24) */
+#stage .list { position: absolute; overflow-y: auto; padding: calc(var(--px) * 8); box-sizing: border-box; font-size: calc(var(--px) * 16); line-height: 1.5;
+  scrollbar-color: var(--green) var(--panel); }
+.list h1 { margin: 0; font-size: calc(var(--px) * 24); font-family: "Misaki Mincho", "DotGothic16", serif; color: var(--gold); text-align: center; }
+.list .doujin { margin: 0 0 calc(var(--px) * 8); font-size: calc(var(--px) * 22); text-align: center; color: #fff; }
+.list h2 { margin: calc(var(--px) * 10) 0 calc(var(--px) * 4); font-size: calc(var(--px) * 16); color: var(--green); }
+.list ul { list-style: none; margin: 0; padding: 0; }
+.list li { display: flex; gap: calc(var(--px) * 6); align-items: center; }
+.list button.book { flex: 1; text-align: left; background: #14261f; color: #fff; border: 1px solid #245a46; padding: calc(var(--px) * 3) calc(var(--px) * 6); font-size: calc(var(--px) * 16); cursor: pointer; }
+.list button.book:hover, .list button.book:focus-visible { border-color: var(--gold); outline: none; }
+.list button.forget { background: transparent; color: #b8b0c8; border: 0; font-size: calc(var(--px) * 12); cursor: pointer; }
+.list .author { color: #b8b0c8; font-size: calc(var(--px) * 12); margin-left: calc(var(--px) * 6); }
+.list .drop { margin-top: calc(var(--px) * 4); border: 1px dashed #3fe0a0; padding: calc(var(--px) * 8); text-align: center; color: #b8f0d8; }
+.list .drop.over { background: #14261f; }
+.list .message { min-height: 1.5em; color: var(--gold); }
+.list .credits { margin-top: calc(var(--px) * 10); font-size: calc(var(--px) * 12); color: #b8b0c8; }
+.list .credits a { color: #b8f0d8; }
+
+/* the floating controls (A-15, ST-16, ST-17) */
+#controls { position: fixed; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; padding: 0.6vh 1vw; z-index: 30; font-size: max(14px, 2vh);
+  text-shadow: 1px 1px 0 var(--ink), -1px 1px 0 var(--ink), 1px -1px 0 var(--ink), -1px -1px 0 var(--ink); pointer-events: none; }
+#controls[hidden] { display: none; }
+#controls > div { display: flex; gap: 0.6vw; align-items: center; pointer-events: auto; }
+#controls button { background: var(--ink); color: #fff; border: 1px solid #4a4458; padding: 0.3em 0.7em; cursor: pointer; font-size: inherit; transition: opacity .4s; }
+#controls .keep { color: var(--gold); }
+body.rest #controls:not(:focus-within) button { opacity: 0; }
+
+#notice { position: fixed; left: 50%; bottom: 3vh; transform: translateX(-50%); z-index: 31; font-size: max(14px, 2.2vh); color: var(--gold);
+  text-shadow: 1px 1px 0 var(--ink), -1px 1px 0 var(--ink), 1px -1px 0 var(--ink), -1px -1px 0 var(--ink); pointer-events: none; }
+.hidden-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+dialog { background: var(--panel); color: #fff; border: 2px solid var(--green); font-size: max(14px, 2.2vh); max-height: 80vh; min-width: min(80vw, 420px); }
+dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog h2 { margin-top: 0; color: var(--gold); font-size: 1.1em; }
+dialog button { background: var(--ink); color: #fff; border: 1px solid #4a4458; padding: 0.3em 0.8em; cursor: pointer; }
+dialog label { display: block; margin: 0.5em 0; }
+dialog ol { padding-left: 1.4em; }
+dialog ol button { background: transparent; border: 0; color: #fff; text-align: left; padding: 0.15em 0; }
+#end-notes { white-space: pre-wrap; font-size: 0.8em; color: #b8b0c8; margin: 0.8em 0; }
+.row { display: flex; gap: 0.6em; }
+
+#turn { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; align-items: center; justify-content: center; font-size: 6vw; color: #fff; }
+#turn[hidden] { display: none; }
+
+/* the title screen (V-07, ST-40; ED D-142): rainbow letters above M.E.O.W, and SELECT A BOOK */
+#title { position: absolute; left: 0; right: 0; top: 6%; display: flex; flex-direction: column; align-items: center; gap: calc(var(--px) * 6); text-align: center; }
+#title[hidden] { display: none; }
+#title .rainbow { margin: 0; font-family: "Misaki Mincho", "DotGothic16", serif; line-height: 1.1;
+  background: linear-gradient(90deg, #ff4d4d, #ffb84d, #fff04d, #5dff7a, #4dd2ff, #6a6bff, #d24dff, #ff4d4d);
+  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 0 calc(var(--px) * 3) rgba(255, 255, 255, 0.55)) drop-shadow(1px 1px 0 #1d1a2e);
+  animation: rainbow-slide 6s linear infinite; }
+#title h1.rainbow { font-size: calc(var(--px) * 58); letter-spacing: 0.04em; }
+#title .doujin { font-size: calc(var(--px) * 34); }
+#title button { margin-top: calc(var(--px) * 14); background: transparent; border: 0; color: #ffffff; cursor: pointer;
+  font-family: "DotGothic16", sans-serif; font-size: calc(var(--px) * 26); letter-spacing: 0.15em;
+  text-shadow: 2px 2px 0 #1d1a2e; animation: blink-slow 1s steps(1) infinite; }
+#title button:focus-visible { outline: 2px solid #ffcf3f; }
+@keyframes rainbow-slide { from { background-position: 0% 0; } to { background-position: 200% 0; } }
+@keyframes blink-slow { 50% { opacity: 0.25; } }

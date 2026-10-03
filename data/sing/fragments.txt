@@ -1,0 +1,48 @@
+# Melody fragments of sung reading (歌 ED D-11 to D-13, D-29). Add, change or remove lines freely.
+#
+# kind  pattern     kind: A = A melody, B = B melody, C = C melody, S = サビ
+#                   pattern: 8 characters. 1 is the root of the chord that is sounding, 2 the next note
+#                   of the scale, and so on; 8 is the root an octave up, 9 the note above it;
+#                   0 is the note below the root. - is a rest; rests are not used (the 文節 decides the
+#                   rhythm), so [--13245-] is the same as 13245. Brackets are allowed.
+# The first set was written by Claude on 2026-10-01.
+
+# A melody: calm, near the root, mostly by step
+A  11232321
+A  33212321
+A  12345432
+A  32123432
+A  55432123
+A  13212321
+A  32112343
+A  12332112
+
+# B melody: rising, leading somewhere
+B  12345565
+B  34565432
+B  23456545
+B  55665567
+B  34355465
+B  12356532
+B  45654567
+B  33445566
+
+# C melody: a change of color, lower and with leaps
+C  10121343
+C  43210123
+C  66544321
+C  14324321
+C  31024312
+C  64534231
+C  21012345
+C  46546432
+
+# サビ: high, with leaps to the octave
+S  58765653
+S  55865535
+S  88765568
+S  53588765
+S  56588653
+S  85356588
+S  55668865
+S  86535688

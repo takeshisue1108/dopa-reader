@@ -1,0 +1,44 @@
+[
+  {
+    "key": "aozora:001567",
+    "title": "走れメロス",
+    "author": "太宰治",
+    "kind": "novel",
+    "path": "data/books/001567/text.txt"
+  },
+  {
+    "key": "aozora:000092",
+    "title": "蜘蛛の糸",
+    "author": "芥川龍之介",
+    "kind": "novel",
+    "path": "data/books/000092/text.txt"
+  },
+  {
+    "key": "aozora:043754",
+    "title": "注文の多い料理店",
+    "author": "宮沢賢治",
+    "kind": "novel",
+    "path": "data/books/043754/text.txt"
+  },
+  {
+    "key": "aozora:054957",
+    "title": "工藝の道",
+    "author": "柳宗悦",
+    "kind": "essay",
+    "path": "data/books/054957/text.txt"
+  },
+  {
+    "key": "aozora:001914",
+    "title": "人生論ノート",
+    "author": "三木清",
+    "kind": "essay",
+    "path": "data/books/001914/text.txt"
+  },
+  {
+    "key": "aozora:002358",
+    "title": "科学と文学",
+    "author": "寺田寅彦",
+    "kind": "essay",
+    "path": "data/books/002358/text.txt"
+  }
+]

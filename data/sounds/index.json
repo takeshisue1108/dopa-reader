@@ -1,0 +1,39 @@
+{
+ "source": "効果音ラボ (soundeffect-lab.info), via trickal/game/audio/se/ (ED D-111, D-131)",
+ "roles": {
+  "launch": "launch.mp3",
+  "hit": "hit.mp3",
+  "miss": "miss.mp3",
+  "siren": "siren.mp3",
+  "sting": "sting.mp3",
+  "boom_s": "boom_s.mp3",
+  "boom_m": "boom_m.mp3",
+  "boom_l": "boom_l.mp3",
+  "boom_xl": "boom_xl.mp3",
+  "boom_max": "boom_max.mp3",
+  "fanfare": "fanfare.mp3",
+  "tally": "tally.mp3",
+  "levelup": "levelup.mp3",
+  "boss_hit": "boss_hit.mp3",
+  "boss_fall": "boss_fall.mp3",
+  "lever": "lever.mp3"
+ },
+ "names": {
+  "launch": "ミサイル",
+  "hit": "爆発1",
+  "miss": "パンチの風切り音（スローモーション）1",
+  "siren": "宇宙基地サイレン",
+  "sting": "シャキーン1",
+  "boom_s": "爆発2",
+  "boom_m": "大爆発1",
+  "boom_l": "大爆発2",
+  "boom_xl": "爆発3",
+  "boom_max": "爆発4",
+  "fanfare": "ラッパのファンファーレ",
+  "tally": "カウントダウン電子音",
+  "levelup": "ステータス上昇魔法1",
+  "boss_hit": "打撃1",
+  "boss_fall": "大爆発2",
+  "lever": "スイッチを押す"
+ }
+}
