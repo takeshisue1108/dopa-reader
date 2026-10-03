@@ -1,5 +1,6 @@
 // Uploaded books, kept in the user's own browser (SPEC_dopa v3 §5.4, SD-W08; ED D-76): the
-// original file's bytes, its name and type, under `file:<sha256>`. Nothing leaves the browser.
+// original file's bytes, its name and type (this site gives an empty type), under
+// `file:<sha256>`. Nothing leaves the browser.
 // When IndexedDB cannot be used (private browsing, a full disk), keeping fails quietly: the book
 // is read now and is not offered next time.
 
@@ -7,6 +8,7 @@ const DB = "ddr",
   STORE = "files";
 let opening = null;
 
+/** The database, opened once (its one store is made at the first visit). */
 function open() {
   if (!opening)
     opening = new Promise((resolve, reject) => {
@@ -18,10 +20,12 @@ function open() {
   return opening;
 }
 
+/** Run one request in a transaction of its own: `action(store)` gives the request; resolves to
+ * its result when the transaction is complete. */
 async function run(mode, action) {
-  const db = await open();
+  const database = await open();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE, mode),
+    const transaction = database.transaction(STORE, mode),
       request = action(transaction.objectStore(STORE));
     transaction.oncomplete = () => resolve(request && request.result);
     transaction.onerror = () => reject(transaction.error);
@@ -32,7 +36,7 @@ async function run(mode, action) {
 /** The key of a file's bytes: `file:` and the hex SHA-256. */
 export async function keyOf(bytes) {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return "file:" + [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return "file:" + [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** Keep a file; resolves to true when it was kept. */

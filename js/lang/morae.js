@@ -2,7 +2,8 @@
 // keep SPEC_sing §6.1 steps 3 to 6). This is the JavaScript copy of the mora rules of
 // `dbr/sing.py`, which the server used until the site (SD-W05): a small kana joins the kana
 // before it, 「ー」 is sung as the vowel before it, and 「ス」 and 「ン」 are morae like any other
-// (歌 ED D-30), except in a 文節 too long for one bar (D-31). No browser globals: tested with node.
+// (歌 ED D-30), except that in a 文節 too long for one bar a ン joins the mora before it (D-31).
+// No browser globals: tested with node.
 
 export const SLOTS_PER_BAR = 8;
 export const SMALL_KANA = "ャュョァィゥェォヮ";
@@ -26,7 +27,8 @@ for (const [row, vowel] of [
 ])
   for (const kana of row) VOWEL_OF_KANA[kana] = vowel;
 
-/** The vowel kana a mora ends in (ン for ン); null for ッ, which has no sound to prolong. */
+/** The vowel kana a mora ends in (ン for ン); null for ッ, which has no sound to prolong, and for
+ * a kana the table does not hold (ヰ, ヱ). */
 export const vowelOf = (mora) => VOWEL_OF_KANA[mora[mora.length - 1]] ?? null;
 
 /** Katakana with each 「ニャン」 unit spelled out, for showing a pronunciation. */
@@ -36,13 +38,14 @@ export const spelledOut = (pron) => (pron ?? "").replaceAll(NYAN_MARK, NYAN);
  * The morae of a pronunciation in katakana, as [{ k, long }].
  *
  * A small kana joins the kana before it (キャ). The long mark ー is a mora of its own, sung as the
- * vowel of the mora before it; `before` is the last mora of the word before, for a word that
- * starts with the mark. NYAN_MARK is the one mora ニャン. Anything else that is not kana is
+ * vowel of the mora before it; `before` is the kana of the last mora of the word before, for a
+ * word that starts with the mark. A mark with no vowel to prolong is sung ア. NYAN_MARK is the one
+ * mora ニャン. Anything else that is not kana is
  * dropped, such as ’, which marks an unvoiced vowel.
  *
  *     moraeOf("ショーヒン") -> ショ, オ (long), ヒ, ン
  */
-export function moraeOf(pron, before = null) {
+export function moraeOf(pron, kanaBefore = null) {
   const morae = [];
   for (const char of pron ?? "") {
     if (char === NYAN_MARK) {
@@ -54,7 +57,7 @@ export function moraeOf(pron, before = null) {
       morae.length > 0 && !morae[morae.length - 1].long && morae[morae.length - 1].k !== NYAN;
     if (SMALL_KANA.includes(char) && previousIsPlainKana) morae[morae.length - 1].k += char;
     else if (char === "ー") {
-      const prolonged = morae.length ? morae[morae.length - 1].k : before;
+      const prolonged = morae.length ? morae[morae.length - 1].k : kanaBefore;
       morae.push({ k: (prolonged && vowelOf(prolonged)) || "ア", long: true });
     } else morae.push({ k: SAME_SOUND[char] ?? char, long: false });
   }
@@ -67,12 +70,12 @@ export function moraeOf(pron, before = null) {
  * A character lights when the first of its morae is sung, so the end is rounded up: 本 (ホ, ン)
  * lights on ホ.
  */
-export function spreadOverCharacters(kana, wordStart, wordEnd) {
+export function spreadOverCharacters(sounds, wordStart, wordEnd) {
   const length = wordEnd - wordStart;
-  return kana.map(({ k, long }, n) => ({
+  return sounds.map(({ k, long }, n) => ({
     k,
-    start: wordStart + Math.floor((length * n) / kana.length),
-    end: wordStart + Math.ceil((length * (n + 1)) / kana.length),
+    start: wordStart + Math.floor((length * n) / sounds.length),
+    end: wordStart + Math.ceil((length * (n + 1)) / sounds.length),
     tails: [],
     long,
   }));
@@ -83,16 +86,20 @@ export function spreadOverCharacters(kana, wordStart, wordEnd) {
  *
  * From the start of the 文節, as many ン as needed join the mora before them into one closed
  * syllable sung in one slot from its own sound in the bank (サ + ン -> サン; ED D-118: every
- * 「mora + ン」 was sung by VOICEVOX as one sound). They take no slot of their own. If the 文節 has too few ン to get down to 8, none is
- * changed, since it needs a second bar anyway. A ン stays a mora when it opens the 文節, when it
- * is a long vowel's sound, or when the mora before it is ッ or ends in ン (ン, or the unit ニャン).
- * The unit ニャン is never a ン here.
+ * 「mora + ン」 was sung by VOICEVOX as one sound). They take no slot of their own. If the 文節
+ * has too few ン to get down to 8, none is changed, since it needs a second bar anyway. A ン
+ * stays a mora when it opens the 文節, when it is a long vowel's sound, or when the mora before
+ * it is ッ or ends in ン (ン, or the unit ニャン). The unit ニャン is never a ン here.
  *
  *     セ エ サ ン ヨ オ シ キ ガ (9) -> セ エ サン ヨ オ シ キ ガ (8)
  */
 export function fit(morae) {
   const canBecomeEnding = (mora, previous) =>
-    mora.k === "ン" && !mora.long && !!previous && previous.k !== "ッ" && !previous.k.endsWith("ン");
+    mora.k === "ン" &&
+    !mora.long &&
+    !!previous &&
+    previous.k !== "ッ" &&
+    !previous.k.endsWith("ン");
   let tooMany = morae.length - SLOTS_PER_BAR;
   const candidates = morae.filter((mora, i) => canBecomeEnding(mora, i ? morae[i - 1] : null));
   if (tooMany <= 0 || candidates.length < tooMany) return morae;

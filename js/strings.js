@@ -1,4 +1,6 @@
-// Every string shown to the user (SPEC_dopa v3 §6.10; ED ED-10). `{name}` is filled by fill().
+// The strings that the scripts show to the user (SPEC_dopa v3 §6.10; ED ED-10). `{name}` is
+// filled by fill(). The page's own HTML holds its texts by itself, and the parsers have their own
+// messages: some of the keys here are read by no script.
 
 export const S = {
   site: "ドパドパ読書リーダー",
@@ -48,5 +50,7 @@ export const S = {
 
 /** A string with its `{name}` places filled. */
 export function fill(text, values = {}) {
-  return text.replace(/\{(\w+)\}/g, (all, name) => (name in values ? String(values[name]) : all));
+  return text.replace(/\{(\w+)\}/g, (whole, name) =>
+    name in values ? String(values[name]) : whole,
+  );
 }

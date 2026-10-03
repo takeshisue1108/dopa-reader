@@ -2,8 +2,9 @@
 // A file named .pdf, or one that starts with %PDF-, is a PDF. Any other file is decoded as UTF-8
 // (fatal), then as Shift_JIS, then as EUC-JP; a decoding counts only if fewer than 0.1% of its
 // characters are U+FFFD. A .md file is Markdown. A .txt file with 《》 ruby, ［＃ notes or the
-// dash line of the 青空文庫 symbol note is 青空文庫; any other .txt is plain text. Any other
-// extension is refused.
+// dash line of the 青空文庫 symbol note is 青空文庫; else a .txt that reads as Markdown (a #
+// heading, a table's rule line, a fenced block, a link) is Markdown (D-115); any other .txt is
+// plain text. Any other extension is refused.
 
 import { BookError, MESSAGES } from "./model.js";
 
@@ -11,7 +12,9 @@ const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d]; // %PDF-
 
 /** The extension of a file name, lower case, without the dot ("" when there is none). */
 export function extensionOf(name) {
-  const file = String(name ?? "").split(/[\\/]/).pop();
+  const file = String(name ?? "")
+    .split(/[\\/]/)
+    .pop();
   const dot = file.lastIndexOf(".");
   return dot > 0 ? file.slice(dot + 1).toLowerCase() : "";
 }
@@ -40,7 +43,7 @@ export function decode(bytes) {
       broken = 0;
     for (const ch of text) {
       total++;
-      if (ch === "�") broken++;
+      if (ch === "\uFFFD") broken++;
     }
     if (total > 0 && broken / total < 0.001) return { text, encoding };
   }
@@ -71,6 +74,7 @@ export function looksMarkdown(text) {
 export function formatOf(name, text) {
   const extension = extensionOf(name);
   if (extension === "md") return "markdown";
-  if (extension === "txt") return looksAozora(text) ? "aozora" : looksMarkdown(text) ? "markdown" : "text";
+  if (extension === "txt")
+    return looksAozora(text) ? "aozora" : looksMarkdown(text) ? "markdown" : "text";
   throw new BookError(MESSAGES.format, "format");
 }

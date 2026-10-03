@@ -5,6 +5,7 @@ import * as books from "./books/index.js";
 import { closePdf, renderPdfPage } from "./books/pdfpages.js";
 import * as cockpit from "./cockpit/cockpit.js";
 import { createAnalyzer } from "./lang/client.js";
+import * as loading from "./loading.js";
 import * as reader from "./reader.js";
 import * as sing from "./sing/index.js";
 import * as sound from "./sound.js";
@@ -18,6 +19,8 @@ let bundled = [], // data/books/index.json
   listOpen = false;
 
 // ---------------------------------------------------------------- boot
+/** Boot the page: load the cockpit, give the reader its callbacks, load the list of the bundled
+ * books, wire the controls and show the title. */
 async function boot() {
   watchOrientation();
   await cockpit.load();
@@ -40,15 +43,18 @@ async function boot() {
   }
   wireControls();
   showTitle();
+  $("loading")?.remove(); // the loading words of the page itself (D-154)
   if (new URLSearchParams(location.search).has("gallery")) showGallery();
-  // the first touch of a visit: phones want the audio made inside a gesture (§6.9)
+  // at every touch and key: phones want the audio made, and woken, inside a gesture (§6.9)
   addEventListener("pointerdown", unlockAudio, { capture: true });
   addEventListener("keydown", unlockAudio, { capture: true });
 }
 
+/** At every touch and key: make the song's AudioContext and let it run, and make the effects'
+ * context and load the effects. Both must happen inside a gesture on a phone. */
 function unlockAudio() {
-  // not while the song is held (⏸, the lever down, a drawer): a tap must not start it (D-143)
   const context = sing.ensureContext();
+  // not while the song is held (⏸, the lever down, a drawer): a tap must not start it (D-143)
   if (!sing.condition().held) context.resume().catch(() => {});
   sound.init(prefs.settings().sfx);
 }
@@ -70,6 +76,8 @@ function showTitle() {
 }
 
 // ---------------------------------------------------------------- the book list (V-06)
+/** Show the book list over the main monitor: a file to choose or to drop, the bundled books, the
+ * books read before (「続きから」) and the credits. The reading is held while it is open. */
 async function showList() {
   listOpen = true;
   if (book) reader.hold(true);
@@ -79,8 +87,9 @@ async function showList() {
   $("title").hidden = true;
   list.hidden = false;
   list.replaceChildren();
-  const add = (tag, props = {}, parent = list) => parent.appendChild(Object.assign(document.createElement(tag), props));
-  const message = add("p", { className: "message", id: "list-message" });
+  const add = (tag, props = {}, parent = list) =>
+    parent.appendChild(Object.assign(document.createElement(tag), props));
+  const message = add("div", { className: "message", id: "list-message" });
 
   add("h2", { textContent: S.fromFile });
   const input = add("input", { type: "file", accept: ".txt,.md,.pdf", hidden: true });
@@ -100,49 +109,153 @@ async function showList() {
   };
 
   add("h2", { textContent: S.bundled });
-  const ul = add("ul");
+  const group = add("ul");
   for (const entry of bundled) {
-    const li = add("li", {}, ul);
-    const button = add("button", { className: "book", onclick: () => openKey(entry.key) }, li);
+    const row = add("li", {}, group);
+    const button = add("button", { className: "book", onclick: () => openKey(entry.key) }, row);
     button.append(entry.title);
-    button.append(Object.assign(document.createElement("span"), { className: "author", textContent: entry.author }));
+    button.append(
+      Object.assign(document.createElement("span"), {
+        className: "author",
+        textContent: entry.author,
+      }),
+    );
   }
 
   // 「続きから」: books read before, the latest first (uploads only while still kept)
   const kept = new Set(await shelf.keys());
-  const recent = prefs.recent().filter((place) => (place.key.startsWith("file:") ? kept.has(place.key) : bundled.some((b) => b.key === place.key)));
+  const recent = prefs
+    .recent()
+    .filter((place) =>
+      place.key.startsWith("file:")
+        ? kept.has(place.key)
+        : bundled.some((known) => known.key === place.key),
+    );
   if (recent.length) {
     add("h2", { textContent: S.recent });
-    const ul = add("ul");
+    const group = add("ul");
     for (const place of recent) {
-      const entry = bundled.find((b) => b.key === place.key),
+      const entry = bundled.find((known) => known.key === place.key),
         title = entry ? entry.title : place.title || place.key;
-      const li = add("li", {}, ul);
-      add("button", { className: "book", textContent: title, onclick: () => openKey(place.key) }, li);
-      add("button", {
-        className: "forget",
-        textContent: S.forget,
-        onclick: async () => {
-          prefs.forget(place.key);
-          if (place.key.startsWith("file:")) await shelf.remove(place.key);
-          showList();
+      const row = add("li", {}, group);
+      add(
+        "button",
+        { className: "book", textContent: title, onclick: () => openKey(place.key) },
+        row,
+      );
+      add(
+        "button",
+        {
+          className: "forget",
+          textContent: S.forget,
+          onclick: async () => {
+            prefs.forget(place.key);
+            if (place.key.startsWith("file:")) await shelf.remove(place.key);
+            showList();
+          },
         },
-      }, li);
+        row,
+      );
     }
   }
 
   const credits = add("div", { className: "credits" });
   add("div", { textContent: S.creditVoice }, credits);
   add("div", { textContent: S.creditMusic }, credits);
-  add("a", { href: "LICENSES.md", target: "_blank", rel: "noopener", textContent: S.licenses }, add("div", {}, credits));
+  add(
+    "a",
+    { href: "LICENSES.md", target: "_blank", rel: "noopener", textContent: S.licenses },
+    add("div", {}, credits),
+  );
   list.querySelector("button.book")?.focus();
+}
+
+/** A line of text at the top of the list (a loading notice, why a file cannot be read). It goes
+ * away after 6 s (ST-27). */
+/** Close the list without choosing a book (Esc, while a book is being read): the cockpit comes
+ * back as it was, and the reading goes on if it was going (D-147). The three things that
+ * showList() did for the book being read are undone here: the list, the cockpit's scene, the hold. */
+function closeList() {
+  $("list").hidden = true;
+  listOpen = false;
+  $("controls").hidden = false;
+  cockpit.hideList();
+  reader.hold(false);
 }
 
 function listMessage(text) {
   const line = $("list-message");
   if (!line) return;
   line.textContent = text || "";
-  if (text) setTimeout(() => line.textContent === text && (line.textContent = ""), 6000); // ST-27
+  if (text) setTimeout(() => line.textContent === text && (line.textContent = ""), 6000);
+}
+
+/** The charging display at the top of the list while a file is opened (ST-26): `percent` is the
+ * stage reached. */
+function listCharge(percent) {
+  const line = $("list-message");
+  if (!line) return;
+  if (!line.querySelector(".charge"))
+    line.replaceChildren(Object.assign(document.createElement("div"), { className: "charge" }));
+  setCharge(line.querySelector(".charge"), percent);
+}
+
+// ---------------------------------------------------------------- the charging display
+/** Write the charging display into `place` (ED D-153, A-41; SPEC §6.2a): 「エネルギー充填中 {n}%」
+ * and, under it, the bar filled to {n}%. The words for a screen reader are written when the
+ * display is made, not at every change; the bar tells its own value. */
+function setCharge(place, percent) {
+  if (!place.querySelector(".bar")) {
+    const make = (tag, className) => Object.assign(document.createElement(tag), { className });
+    const words = make("p", "words"),
+      spoken = make("span", "hidden-text"),
+      bar = make("div", "bar");
+    words.setAttribute("aria-hidden", "true");
+    spoken.setAttribute("role", "status");
+    spoken.textContent = S.songLoading;
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-label", S.songLoading);
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    bar.append(make("div", "fill"));
+    place.replaceChildren(words, spoken, bar);
+  }
+  place.querySelector(".words").textContent = fill(S.loading, { n: percent });
+  place.querySelector(".bar").setAttribute("aria-valuenow", String(percent));
+  place.querySelector(".fill").style.width = `${percent}%`;
+}
+
+let stopCharging = null; // stops the watch on the files, while the charging display is up
+const SONG_FILES = ["dictionary", "score", "instruments"]; // what the song itself needs, once
+const SONG_SHARE = 70; // the part of the bar that the song's own files take when they are waited for
+/** The charging display in the middle of the glass, while a sentence waits for the song's files,
+ * the dictionary or its voice (ST-43). {n} is measured (loading.js). When the song's own files
+ * are still coming, they fill the first 70 of the bar and the voice sheets of the sentence that
+ * waits fill the rest; when only the voice is waited for, it fills the whole bar. The voice counts
+ * from the moment its sheets are asked for during this wait, so the bar never goes back. */
+function showCharge() {
+  if (stopCharging) return;
+  const place = $("charge"),
+    songWaited = loading.pending().some((group) => SONG_FILES.includes(group));
+  let voiceAsked = false;
+  const update = () => {
+    voiceAsked ||= loading.pending().includes("voice");
+    const voice = voiceAsked ? loading.share(["voice"]) : 0,
+      percent = songWaited
+        ? SONG_SHARE * loading.share(SONG_FILES) + (100 - SONG_SHARE) * voice
+        : 100 * voice;
+    setCharge(place, Math.floor(percent));
+  };
+  update();
+  place.hidden = false;
+  stopCharging = loading.watch(update);
+}
+function hideCharge() {
+  if (!stopCharging) return;
+  stopCharging();
+  stopCharging = null;
+  $("charge").hidden = true;
+  $("charge").replaceChildren(); // made anew, and said anew, the next time
 }
 
 /** Open a bundled book or a kept upload by its key. */
@@ -152,13 +265,13 @@ async function openKey(key) {
     if (!record) return listMessage(S.noText);
     return openBytes(record.name, new Uint8Array(record.bytes), key);
   }
-  const entry = bundled.find((b) => b.key === key);
+  const entry = bundled.find((known) => known.key === key);
   if (!entry) return;
-  listMessage(fill(S.loading, { n: 0 }));
+  listCharge(0);
   try {
     const bytes = new Uint8Array(await (await fetch(entry.path)).arrayBuffer());
     const folder = entry.path.replace(/[^/]+$/, "");
-    listMessage(fill(S.loading, { n: 60 }));
+    listCharge(60);
     const opened = await books.parseFile({ name: "text.txt", bytes, key, imageBase: folder });
     start(opened);
   } catch (error) {
@@ -168,20 +281,23 @@ async function openKey(key) {
 
 /** A new file from 「ファイルを選ぶ」 or the drop place: read, keep, open (ST-26). */
 async function openFile(file) {
-  listMessage(fill(S.loading, { n: 0 }));
+  listCharge(0);
   const bytes = new Uint8Array(await file.arrayBuffer());
-  listMessage(fill(S.loading, { n: 40 }));
+  listCharge(40);
   const key = await shelf.keyOf(bytes);
   await openBytes(file.name, bytes, key, true);
 }
 
+/** Read a file's bytes as a book and start reading it; with `keep`, the file is first kept in
+ * the browser, to be offered again. A file that cannot be read gives its reason on the list. */
 async function openBytes(name, bytes, key, keep = false) {
   try {
     const opened = await books.parseFile({ name, bytes, key });
     if (keep) await shelf.keep(key, { name, type: "", bytes });
     start(opened);
   } catch (error) {
-    if (error.code === "pdf") listMessage(S.badFormat); // a PDF that pdf.js cannot open
+    if (error.code === "pdf")
+      listMessage(S.badFormat); // a PDF that pdf.js cannot open
     else listMessage(error.message || S.noText);
   }
 }
@@ -202,6 +318,7 @@ async function start(opened) {
 }
 
 // ---------------------------------------------------------------- the controls
+/** Wire the buttons, the drawers and the four settings (once, at boot). */
 function wireControls() {
   $("play").onclick = () => (reader.isPlaying() ? reader.pause() : reader.play());
   $("fire").addEventListener("pointerdown", (event) => {
@@ -221,6 +338,12 @@ function wireControls() {
     reader.pressBomb();
   });
   $("bomb").addEventListener("pointerdown", (event) => event.stopPropagation());
+  // the play icon above the lever (D-152): what 「▶ 再生」 does to a stopped reader
+  $("go").addEventListener("click", (event) => {
+    event.stopPropagation();
+    reader.pressGo();
+  });
+  $("go").addEventListener("pointerdown", (event) => event.stopPropagation());
   // the gear lever (D-126, D-145): each tap moves it; down sets the explosion off, up goes on
   $("gear").addEventListener("click", (event) => {
     event.stopPropagation();
@@ -238,45 +361,49 @@ function wireControls() {
   $("jump-go").onclick = () => {
     const page = Number($("jump-page").value),
       number = Number($("jump-number").value);
+    // the block of that number; for a PDF with a page given, the first block on that page or
+    // after it
     let target = number - 1;
-    if (page && book.format === "pdf") target = Math.max(0, book.blocks.findIndex((b) => b.page >= page));
+    if (page && book.format === "pdf")
+      target = Math.max(
+        0,
+        book.blocks.findIndex((block) => block.page >= page),
+      );
     $("jump").close();
     if (target >= 0) reader.jump(target);
   };
   addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && listOpen && book) {
-      $("list").hidden = true;
-      listOpen = false;
-      $("controls").hidden = false;
-      reader.hold(false);
-    }
+    if (event.key === "Escape" && listOpen && book) closeList();
   });
-  for (const kind of ["mousemove", "pointerdown", "keydown"]) addEventListener(kind, () => !listOpen && cockpit.wake());
+  for (const kind of ["mousemove", "pointerdown", "keydown"])
+    addEventListener(kind, () => !listOpen && cockpit.wake());
 
-  const s = prefs.settings();
-  $("set-speed").value = s.speed;
-  $("set-voice").value = s.voice;
-  $("set-music").value = s.music;
-  $("set-sfx").value = s.sfx;
-  $("set-speed").oninput = (e) => {
-    prefs.setSetting("speed", Number(e.target.value));
-    sing.setSpeed(Number(e.target.value));
+  const saved = prefs.settings();
+  $("set-speed").value = saved.speed;
+  $("set-voice").value = saved.voice;
+  $("set-music").value = saved.music;
+  $("set-sfx").value = saved.sfx;
+  $("set-speed").oninput = (event) => {
+    prefs.setSetting("speed", Number(event.target.value));
+    sing.setSpeed(Number(event.target.value));
   };
-  $("set-voice").oninput = (e) => {
-    prefs.setSetting("voice", Number(e.target.value));
-    sing.setVoice(Number(e.target.value));
+  $("set-voice").oninput = (event) => {
+    prefs.setSetting("voice", Number(event.target.value));
+    sing.setVoice(Number(event.target.value));
   };
-  $("set-music").oninput = (e) => {
-    prefs.setSetting("music", Number(e.target.value));
-    sing.setMusic(Number(e.target.value));
+  $("set-music").oninput = (event) => {
+    prefs.setSetting("music", Number(event.target.value));
+    sing.setMusic(Number(event.target.value));
   };
-  $("set-sfx").oninput = (e) => {
-    prefs.setSetting("sfx", Number(e.target.value));
-    sound.setLevel(Number(e.target.value));
+  $("set-sfx").oninput = (event) => {
+    prefs.setSetting("sfx", Number(event.target.value));
+    sound.setLevel(Number(event.target.value));
   };
   document.querySelector("#settings .credits").textContent = `${S.creditVoice}　${S.creditMusic}`;
 }
 
+/** Open a drawer ("contents", "jump" or "settings"), filled for the book being read. The reading
+ * is held until it closes. */
 function openDrawer(id) {
   if (!book) return;
   reader.hold(true); // the song stops while a drawer is open (V-05)
@@ -284,9 +411,14 @@ function openDrawer(id) {
     const list = $("contents-list");
     list.replaceChildren();
     book.chapters.forEach((chapter) => {
-      const li = document.createElement("li");
-      li.append(Object.assign(document.createElement("button"), { textContent: chapter.title || book.title, onclick: () => ($("contents").close(), reader.jump(chapter.firstBlock)) }));
-      list.append(li);
+      const row = document.createElement("li");
+      row.append(
+        Object.assign(document.createElement("button"), {
+          textContent: chapter.title || book.title,
+          onclick: () => ($("contents").close(), reader.jump(chapter.firstBlock)),
+        }),
+      );
+      list.append(row);
     });
     $("end-notes").textContent = (book.endNotes || []).join("\n"); // D-78
   }
@@ -299,17 +431,26 @@ function openDrawer(id) {
   $(id).showModal();
 }
 
+/** The button 「ブロック n/total」 shows the block being read; it is written anew every second,
+ * by a timer that each call of this starts. */
 function updateJumpLabel() {
   const refresh = () => {
-    if (book) $("open-jump").textContent = fill(S.blockOf, { n: reader.debug().at.block + 1, total: book.blocks.length });
+    if (book)
+      $("open-jump").textContent = fill(S.blockOf, {
+        n: reader.debug().at.block + 1,
+        total: book.blocks.length,
+      });
   };
   refresh();
   setInterval(refresh, 1000);
 }
 
 let noticeTimer = null;
-/** A notice in the corner (エネルギー充填中, 歌の素材を…); `null` with `which` clears that one. */
+/** A notice at the lower edge (歌の素材を…); `null` with `which` clears that one. */
 function notice(text, which) {
+  // the charging words have a display of their own (D-153)
+  if (text === S.songLoading) return showCharge();
+  if (text === null && which === S.songLoading) return hideCharge();
   const line = $("notice");
   if (text === null) {
     if (line.textContent === which) line.textContent = "";
@@ -317,7 +458,7 @@ function notice(text, which) {
   }
   line.textContent = text;
   clearTimeout(noticeTimer);
-  if (text !== S.songLoading) noticeTimer = setTimeout(() => (line.textContent = ""), 6000);
+  noticeTimer = setTimeout(() => (line.textContent = ""), 6000);
 }
 
 /** A phone held upright stops everything and asks to be turned (ST-36, D-99, SD-W14). */
@@ -331,23 +472,59 @@ function watchOrientation() {
   check();
 }
 
-/** The gallery (?gallery=1; SPEC_dopa v3 §9.3, Q-21): the synthesized sounds, the five explosion
+/** The gallery (?gallery=1; SPEC_dopa v3 §9.3, Q-21): the sound effects, the five explosion
  * tiers, the bomb's steps and a spinning enemy, for the owner to judge. Not a part of reading. */
 function showGallery() {
   const panel = Object.assign(document.createElement("div"), { id: "gallery" });
-  panel.style.cssText = "position:fixed;right:8px;bottom:8px;z-index:60;background:#0b1a16;border:2px solid #3fe0a0;padding:8px;max-width:420px;font-size:14px;display:flex;flex-wrap:wrap;gap:4px";
-  const add = (text, fn) => panel.append(Object.assign(document.createElement("button"), { textContent: text, onclick: () => (unlockAudio(), fn()) }));
-  for (const role of ["launch", "hit", "miss", "siren", "sting", "boom_s", "boom_m", "boom_l", "boom_xl", "boom_max", "fanfare", "tally", "levelup", "boss_hit", "boss_fall", "lever"]) add(`音 ${role}`, () => sound.play(role));
-  ["小", "中", "大", "特大", "最大"].forEach((name, k) => add(`爆発 ${name}`, () => {
-    $("list").hidden = true;
-    cockpit.gallery.blast(1 + 2 * k);
-  }));
-  [0, 1, 3, 5, 7, 9].forEach((lv) => add(`爆弾 Lv${lv}`, () => cockpit.gallery.count([0, 1, 5, 8, 13, 21, 33, 53, 84, 135][lv])));
-  add("一覧を隠す", () => ($("list").hidden = !$("list").hidden));
+  panel.style.cssText =
+    "position:fixed;right:8px;bottom:8px;z-index:60;background:#0b1a16;border:2px solid #3fe0a0;padding:8px;max-width:420px;font-size:14px;display:flex;flex-wrap:wrap;gap:4px";
+  const addButton = (text, action) =>
+    panel.append(
+      Object.assign(document.createElement("button"), {
+        textContent: text,
+        onclick: () => (unlockAudio(), action()),
+      }),
+    );
+  for (const role of [
+    "launch",
+    "hit",
+    "miss",
+    "siren",
+    "sting",
+    "boom_s",
+    "boom_m",
+    "boom_l",
+    "boom_xl",
+    "boom_max",
+    "fanfare",
+    "tally",
+    "levelup",
+    "boss_hit",
+    "boss_fall",
+    "lever",
+  ])
+    addButton(`音 ${role}`, () => sound.play(role));
+  ["小", "中", "大", "特大", "最大"].forEach((name, index) =>
+    addButton(`爆発 ${name}`, () => {
+      $("list").hidden = true;
+      cockpit.gallery.blast(1 + 2 * index);
+    }),
+  );
+  [0, 1, 3, 5, 7, 9].forEach((step) =>
+    // the counts are the first count of each level, 0 to 9 (levelStart in levels.js)
+    addButton(`爆弾 Lv${step}`, () =>
+      cockpit.gallery.count([0, 1, 5, 8, 13, 21, 33, 53, 84, 135][step]),
+    ),
+  );
+  addButton("一覧を隠す", () => ($("list").hidden = !$("list").hidden));
   document.body.append(panel);
 }
 
 // for checks
-globalThis.ddr = { reader: () => reader.debug(), cockpit: () => cockpit.debug(), sing: () => sing.condition() };
+globalThis.ddr = {
+  reader: () => reader.debug(),
+  cockpit: () => cockpit.debug(),
+  sing: () => sing.condition(),
+};
 
 boot();

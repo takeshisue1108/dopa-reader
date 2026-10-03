@@ -1,15 +1,17 @@
 // The main monitor of the cockpit (ED D-33, D-75, D-97, D-108, ST-13, ST-19, ST-24; SPEC_dopa v3
 // §6.1, §6.7): the upper middle of the glass. It shows the launch of a chapter, a figure of the
-// book (an image, a PDF page or a Markdown table, through the PlayStation pass), and the empty
-// screen behind the book list, which is HTML laid over it. It opens in 6 ticks from a line. Its
-// frame is taken from the accepted test scene.
+// book (an image or a PDF page through the PlayStation pass, or a Markdown table drawn as a
+// grid), a text (a heading or a quoted sentence), and the empty screen behind the book list,
+// which is HTML laid over it. It opens in 6 ticks from a line. Its frame is taken from the
+// accepted test scene.
 import { canvas, ctx2d, drawOutlined, hardAlpha, loadImage, ps1, textSprite } from "./pixel.js";
 
 const OPEN_TICKS = 6;
 const FACE = { title: ["Misaki Mincho", 24], sentence: ["DotGothic16", 24] };
 
-/** A text cut into lines that fit `width` at a face and size, as centered sprites. */
-function lines(text, width, [font, size], color) {
+/** A text cut into rows that fit `width` at a face and size, one sprite a row (draw() centers
+ * them). */
+function wrapToSprites(text, width, [font, size], color) {
   const measure = ctx2d(canvas(4, 4));
   measure.font = `${size}px "${font}"`;
   const rows = [];
@@ -22,7 +24,7 @@ function lines(text, width, [font, size], color) {
     row += letter;
   }
   if (row) rows.push(row);
-  return rows.map((words) => textSprite(words, size, font, color));
+  return rows.map((rowText) => textSprite(rowText, size, font, color));
 }
 
 /**
@@ -51,39 +53,45 @@ export class Monitor {
     this.top = top; // the place of a title
     this.turn = turn; // M.E.O.W turning, for the launch: {img, meta: {w, h, frames, cols}}
     this.box = main; // where the thing shown now is
-    this.shown = null; // {kind, t0, figure?, label?, rows?, words: []}
+    // what is shown: {kind, t0 (the tick it came), words: []} and, by kind, figure and label, or
+    // table, rowH and label, or rows, or rows and call
+    this.shown = null;
   }
 
   /** Whether the monitor shows something (the formation then stands back, D-33). */
   get on() {
     return !!this.shown;
   }
-  /** What it shows: "figure", "title", "quote", "launch", or null. */
+  /** What it shows: "figure", "list", "launch", the kind given to showText ("quote", "title"),
+   * or null. */
   get kind() {
     return this.shown ? this.shown.kind : null;
   }
 
+  /** Show nothing; a picture still loading is not shown when it arrives. */
   hide() {
+    this.request = null;
     this.shown = null;
   }
 
   /** A figure of the book (ST-19): its picture through the PlayStation pass (D-28), with the line
-   * that says where in the book it is. Resolves when the picture is ready. */
-  async showFigure(url, sourceLine, tick) {
+   * that says where in the book it is. Resolves when the picture is ready. `tickNow` is a
+   * function: the picture is ready some ticks after the call, and it opens from that tick. */
+  async showFigure(url, sourceLine, tickNow) {
     const request = (this.request = {});
     const image = await loadImage(url, true);
     if (this.request !== request) return; // something else was asked for meanwhile
     const { w, h } = this.box,
       scale = Math.min((w - 16) / image.width, (h - 34) / image.height);
     const picture = canvas(Math.round(image.width * scale), Math.round(image.height * scale)),
-      x = ctx2d(picture);
-    x.imageSmoothingEnabled = true;
-    x.imageSmoothingQuality = "high";
-    x.drawImage(image, 0, 0, picture.width, picture.height);
+      ctx = ctx2d(picture);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(image, 0, 0, picture.width, picture.height);
     this.box = this.main;
     this.shown = {
       kind: "figure",
-      t0: tick(),
+      t0: tickNow(),
       figure: ps1(picture, "auto"),
       label: textSprite(sourceLine, 16, "DotGothic16"),
       words: [],
@@ -95,49 +103,75 @@ export class Monitor {
     this.request = null;
     const { w, h } = this.main,
       scale = Math.min((w - 16) / source.width, (h - 34) / source.height);
-    const picture = canvas(Math.max(1, Math.round(source.width * scale)), Math.max(1, Math.round(source.height * scale))),
-      x = ctx2d(picture);
-    x.imageSmoothingEnabled = true;
-    x.imageSmoothingQuality = "high";
-    x.drawImage(source, 0, 0, picture.width, picture.height);
+    const picture = canvas(
+        Math.max(1, Math.round(source.width * scale)),
+        Math.max(1, Math.round(source.height * scale)),
+      ),
+      ctx = ctx2d(picture);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(source, 0, 0, picture.width, picture.height);
     this.box = this.main;
-    this.shown = { kind: "figure", t0: tick, figure: ps1(picture, "auto"), label: textSprite(sourceLine, 16, "DotGothic16"), words: [] };
+    this.shown = {
+      kind: "figure",
+      t0: tick,
+      figure: ps1(picture, "auto"),
+      label: textSprite(sourceLine, 16, "DotGothic16"),
+      words: [],
+    };
   }
 
   /** A Markdown table as a figure (D-75, §6.7): a grid in DotGothic16 at 16 px; a table taller
-   * than the monitor scrolls down by one row every 2 s. `rows` is a list of lists of cells. */
+   * than the monitor stands for 4 s, then scrolls down by one row every 2 s; one wider than the
+   * monitor is cut at the right. `rows` is a list of lists of cells. */
   showTable(rows, sourceLine, tick) {
     this.request = null;
     const measure = ctx2d(canvas(4, 4));
     measure.font = '16px "DotGothic16"';
+    // a column is as wide as its widest cell and 12 more, from 24 to 220
     const columns = Math.max(...rows.map((row) => row.length)),
-      widths = [...Array(columns)].map((_, c) => Math.min(220, Math.max(24, ...rows.map((row) => Math.ceil(measure.measureText(row[c] || "").width) + 12)))),
-      rowH = 22,
-      tableW = widths.reduce((a, b) => a + b, 0),
-      sheet = canvas(tableW + 2, rows.length * rowH + 2),
-      x = ctx2d(sheet);
-    x.font = measure.font;
-    x.textBaseline = "top";
-    rows.forEach((row, r) => {
+      widths = [...Array(columns)].map((_, column) =>
+        Math.min(
+          220,
+          Math.max(
+            24,
+            ...rows.map((row) => Math.ceil(measure.measureText(row[column] || "").width) + 12),
+          ),
+        ),
+      ),
+      rowHeight = 22,
+      tableWidth = widths.reduce((sum, width) => sum + width, 0),
+      sheet = canvas(tableWidth + 2, rows.length * rowHeight + 2),
+      ctx = ctx2d(sheet);
+    ctx.font = measure.font;
+    ctx.textBaseline = "top";
+    rows.forEach((row, rowIndex) => {
       let left = 1;
-      x.fillStyle = r === 0 ? "#2a3f5a" : r % 2 ? "#141e2a" : "#1a2634";
-      x.fillRect(1, 1 + r * rowH, tableW, rowH);
-      widths.forEach((width, c) => {
-        x.fillStyle = r === 0 ? "#ffcf3f" : "#ffffff";
-        x.save();
-        x.beginPath();
-        x.rect(left, 1 + r * rowH, width - 4, rowH);
-        x.clip();
-        x.fillText(row[c] || "", left + 6, 4 + r * rowH);
-        x.restore();
-        x.fillStyle = "#3fe0a0";
-        x.fillRect(left + width - 1, 1 + r * rowH, 1, rowH);
+      ctx.fillStyle = rowIndex === 0 ? "#2a3f5a" : rowIndex % 2 ? "#141e2a" : "#1a2634";
+      ctx.fillRect(1, 1 + rowIndex * rowHeight, tableWidth, rowHeight);
+      widths.forEach((width, column) => {
+        ctx.fillStyle = rowIndex === 0 ? "#ffcf3f" : "#ffffff";
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, 1 + rowIndex * rowHeight, width - 4, rowHeight);
+        ctx.clip();
+        ctx.fillText(row[column] || "", left + 6, 4 + rowIndex * rowHeight);
+        ctx.restore();
+        ctx.fillStyle = "#3fe0a0";
+        ctx.fillRect(left + width - 1, 1 + rowIndex * rowHeight, 1, rowHeight);
         left += width;
       });
     });
     hardAlpha(sheet, 110);
     this.box = this.main;
-    this.shown = { kind: "figure", t0: tick, table: sheet, rowH, label: textSprite(sourceLine, 16, "DotGothic16"), words: [] };
+    this.shown = {
+      kind: "figure",
+      t0: tick,
+      table: sheet,
+      rowH: rowHeight,
+      label: textSprite(sourceLine, 16, "DotGothic16"),
+      words: [],
+    };
   }
 
   /** The screen behind the book list (ST-24): the frame only; the list is HTML over it. */
@@ -155,7 +189,7 @@ export class Monitor {
     this.shown = {
       kind: "launch",
       t0: tick,
-      rows: lines(title, this.box.w - 40, FACE.title, "#ffffff").slice(0, 2),
+      rows: wrapToSprites(title, this.box.w - 40, FACE.title, "#ffffff").slice(0, 2),
       call: textSprite(call, 24, "Misaki Mincho", "#ffcf3f"),
       words: [],
     };
@@ -170,10 +204,12 @@ export class Monitor {
     this.shown = {
       kind,
       t0: tick,
-      rows: lines(text, this.box.w - 40, face, kind === "quote" ? "#ffffff" : "#ffcf3f").slice(
-        0,
-        kind === "quote" ? 6 : 1,
-      ),
+      rows: wrapToSprites(
+        text,
+        this.box.w - 40,
+        face,
+        kind === "quote" ? "#ffffff" : "#ffcf3f",
+      ).slice(0, kind === "quote" ? 6 : 1),
       words: [],
     };
   }
@@ -190,34 +226,52 @@ export class Monitor {
     });
   }
 
-  draw(f, tick) {
+  /** Draw the monitor on the text layer at this tick: its frame, which opens from a line in 6
+   * ticks, and then what it shows. */
+  draw(ctx, tick) {
     const shown = this.shown;
     if (!shown) return;
     const { x, y, w, h } = this.box,
       open = Math.min(1, (tick - shown.t0) / OPEN_TICKS),
       height = Math.max(2, Math.round(h * open)),
       top = y + Math.round((h - height) / 2);
-    f.fillStyle = "#0b1a16";
-    f.fillRect(x - 4, top - 4, w + 8, height + 8);
-    f.fillStyle = "#3fe0a0";
-    f.fillRect(x - 4, top - 4, w + 8, 2);
-    f.fillRect(x - 4, top + height + 2, w + 8, 2);
+    ctx.fillStyle = "#0b1a16";
+    ctx.fillRect(x - 4, top - 4, w + 8, height + 8);
+    ctx.fillStyle = "#3fe0a0";
+    ctx.fillRect(x - 4, top - 4, w + 8, 2);
+    ctx.fillRect(x - 4, top + height + 2, w + 8, 2);
     if (open < 1) return;
     if (shown.table) {
-      // a tall table scrolls one row every 2 s, and starts again
+      // a tall table stands for 4 s (steps 0 and 1), scrolls one row every 2 s, and starts again
       const room = h - 34,
         extra = Math.max(0, shown.table.height - room),
         rowsOver = Math.ceil(extra / shown.rowH),
         step = rowsOver ? Math.floor((tick - shown.t0) / 60) % (rowsOver + 2) : 0,
-        top = Math.min(extra, Math.max(0, step - 1) * shown.rowH),
+        scrolled = Math.min(extra, Math.max(0, step - 1) * shown.rowH),
         width = Math.min(w - 16, shown.table.width);
-      f.drawImage(shown.table, 0, top, width, Math.min(room, shown.table.height), x + Math.round((w - width) / 2), y + 6, width, Math.min(room, shown.table.height));
-      drawOutlined(f, shown.label.fill, shown.label.ink, x + w - shown.label.w - 6, y + h - shown.label.h - 2);
+      ctx.drawImage(
+        shown.table,
+        0,
+        scrolled,
+        width,
+        Math.min(room, shown.table.height),
+        x + Math.round((w - width) / 2),
+        y + 6,
+        width,
+        Math.min(room, shown.table.height),
+      );
+      drawOutlined(
+        ctx,
+        shown.label.fill,
+        shown.label.ink,
+        x + w - shown.label.w - 6,
+        y + h - shown.label.h - 2,
+      );
     }
     if (shown.figure) {
-      f.drawImage(shown.figure, x + Math.round((w - shown.figure.width) / 2), y + 6);
+      ctx.drawImage(shown.figure, x + Math.round((w - shown.figure.width) / 2), y + 6);
       drawOutlined(
-        f,
+        ctx,
         shown.label.fill,
         shown.label.ink,
         x + w - shown.label.w - 6,
@@ -230,7 +284,7 @@ export class Monitor {
         const { img, meta } = this.turn,
           frame = Math.round(meta.frames * Math.min(1, (tick - shown.t0) / 30)) % meta.frames,
           scale = 2;
-        f.drawImage(
+        ctx.drawImage(
           img,
           (frame % meta.cols) * meta.w,
           Math.floor(frame / meta.cols) * meta.h,
@@ -244,7 +298,7 @@ export class Monitor {
       }
       shown.rows.forEach((row, index) =>
         drawOutlined(
-          f,
+          ctx,
           row.fill,
           row.ink,
           x + Math.round((w - row.w) / 2),
@@ -252,7 +306,7 @@ export class Monitor {
         ),
       );
       drawOutlined(
-        f,
+        ctx,
         shown.call.fill,
         shown.call.ink,
         x + Math.round((w - shown.call.w) / 2),
@@ -267,7 +321,7 @@ export class Monitor {
           );
       shown.rows.forEach((row, index) =>
         drawOutlined(
-          f,
+          ctx,
           row.fill,
           row.ink,
           x + Math.round((w - row.w) / 2),
@@ -276,6 +330,6 @@ export class Monitor {
       );
     }
     for (const word of shown.words)
-      if (word.there) drawOutlined(f, word.sprite.fill, word.sprite.ink, word.x, word.y);
+      if (word.there) drawOutlined(ctx, word.sprite.fill, word.sprite.ink, word.x, word.y);
   }
 }

@@ -6,8 +6,12 @@
 const KEY = "ddr.v1";
 const DEFAULTS = { speed: 1.0, voice: 1.0, music: 0.35, sfx: 0.8 };
 
+// what is kept, read once: { settings, positions, count, lastBook }; lastBook is written and
+// nothing reads it
 let state = null;
 
+/** What is kept, read from the browser's storage at the first call; anything missing or
+ * unreadable there is its default. */
 function load() {
   if (state) return state;
   let saved = null;
@@ -25,6 +29,7 @@ function load() {
   return state;
 }
 
+/** Write everything to the browser's storage; a browser that refuses is ignored. */
 function save() {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
@@ -33,28 +38,33 @@ function save() {
   }
 }
 
-/** The settings: { speed, music, sfx, level }. */
+/** The settings: { speed, voice, music, sfx }. */
 export const settings = () => load().settings;
+/** Change one setting and write it at once. */
 export function setSetting(name, value) {
   load().settings[name] = value;
   save();
 }
 
-/** The one explosion count of the user (D-105). Written at once, so a closed tab keeps it (D-88). */
+/** The one explosion count of the user (D-105). Written at once, so a closed tab keeps it
+ * (D-88). */
 export const count = () => load().count;
-export function setCount(n) {
-  load().count = n;
+export function setCount(shot) {
+  load().count = shot;
   save();
 }
 
-/** The place in a book: { block, sentence, bossHp, chars, sentences, blocks, at } or null. */
+/** The place in a book: { block, sentence, bossHp, chars, sentences, blocks, title, at } or
+ * null. `at` is when it was last written (an ISO time). */
 export const position = (key) => load().positions[key] || null;
+/** Write some fields of a book's place; the fields not given stay as they are kept. */
 export function setPosition(key, place) {
-  const s = load();
-  s.positions[key] = { ...(s.positions[key] || {}), ...place, at: new Date().toISOString() };
-  s.lastBook = key;
+  const kept = load();
+  kept.positions[key] = { ...(kept.positions[key] || {}), ...place, at: new Date().toISOString() };
+  kept.lastBook = key;
   save();
 }
+/** Forget a book's place (「一覧から消す」). */
 export function forget(key) {
   delete load().positions[key];
   save();

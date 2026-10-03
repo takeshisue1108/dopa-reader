@@ -4,11 +4,22 @@
 //
 //     { phrases: [{ pause, morae: [{ k, start, end, tails }] }], targets: [{ start, end, text }] }
 //
+// `k` is the katakana sung in one slot: one kana, two (キャ), a closed syllable (サン) or the unit
+// ニャン. `tails` is always [] here: it held a ン sung at the end of the slot before the closed
+// syllables of D-118, and stays because the conductor still reads it.
 // `start` and `end` are offsets in the speech string, counted as JavaScript counts them (UTF-16
 // code units), so that `speech.slice(start, end)` is the text. Timing is not made here: the reader
 // takes it from the song (§5.6 step 4). Pure: no browser globals, tested with node. The English
 // katakana table (§5.7) is passed in by the caller, so a test can pass a small one.
-import { NYAN, NYAN_MARK, SMALL_KANA, fit, moraeOf, spreadOverCharacters, toKatakana } from "./morae.js";
+import {
+  NYAN,
+  NYAN_MARK,
+  SMALL_KANA,
+  fit,
+  moraeOf,
+  spreadOverCharacters,
+  toKatakana,
+} from "./morae.js";
 import { targetsOf } from "./nouns.js";
 import {
   KANJI_NUMERAL,
@@ -29,26 +40,51 @@ const LATIN_WORD = /^[A-Za-z]+(?:['’-][A-Za-z]+)*$/;
 const LATIN_PIECE = /^(?:[A-Za-z]+|['’-])$/;
 // A word of capitals only is sung by the letters' names (ABC as エー ビー シー, as OpenJTalk did).
 const LETTER_NAMES = {
-  A: "エー", B: "ビー", C: "シー", D: "ディー", E: "イー", F: "エフ", G: "ジー", H: "エイチ",
-  I: "アイ", J: "ジェー", K: "ケー", L: "エル", M: "エム", N: "エヌ", O: "オー", P: "ピー",
-  Q: "キュー", R: "アール", S: "エス", T: "ティー", U: "ユー", V: "ブイ", W: "ダブリュー",
-  X: "エックス", Y: "ワイ", Z: "ゼット",
+  A: "エー",
+  B: "ビー",
+  C: "シー",
+  D: "ディー",
+  E: "イー",
+  F: "エフ",
+  G: "ジー",
+  H: "エイチ",
+  I: "アイ",
+  J: "ジェー",
+  K: "ケー",
+  L: "エル",
+  M: "エム",
+  N: "エヌ",
+  O: "オー",
+  P: "ピー",
+  Q: "キュー",
+  R: "アール",
+  S: "エス",
+  T: "ティー",
+  U: "ユー",
+  V: "ブイ",
+  W: "ダブリュー",
+  X: "エックス",
+  Y: "ワイ",
+  Z: "ゼット",
 };
 
 /**
  * Where each token is written in `speech`, as [start, end) in UTF-16 code units. kuromoji's
- * tokens cover the text in order; `word_position` counts code points from 1, so the surfaces are
- * laid end to end instead, which gives the same places in the units the reader slices with.
+ * tokens come in the order of the text; `word_position` counts code points from 1, so each
+ * surface is looked for from where the last one ended instead, which gives the places in the
+ * units the reader slices with. A character that no token covers is stepped over.
  */
 export function spansOf(speech, tokens) {
   const spans = [];
-  let at = 0;
+  let searchFrom = 0;
   for (const token of tokens) {
     const surface = token.surface_form;
-    let start = speech.startsWith(surface, at) ? at : speech.indexOf(surface, at);
-    if (start < 0) start = at; // never seen; keeps the spans in order
+    let start = speech.startsWith(surface, searchFrom)
+      ? searchFrom
+      : speech.indexOf(surface, searchFrom);
+    if (start < 0) start = searchFrom; // never seen; keeps the spans in order
     spans.push([start, start + surface.length]);
-    at = start + surface.length;
+    searchFrom = start + surface.length;
   }
   return spans;
 }
@@ -99,27 +135,28 @@ export function readUnknown(surface, english = null) {
   return reading;
 }
 
-const known = (field) => field && field !== "*";
-const pronOf = (token, english) =>
-  known(token.pronunciation)
+const isKnown = (field) => field && field !== "*";
+const pronunciationOf = (token, english) =>
+  isKnown(token.pronunciation)
     ? token.pronunciation
-    : known(token.reading)
+    : isKnown(token.reading)
       ? token.reading
       : readUnknown(token.surface_form, english);
 
 // kuromoji cuts don't and well-known at the apostrophe and the hyphen; a Latin token without a
 // reading is joined again with the pieces that follow it, while they stay one word (D-116).
-const isLatinToken = (token) =>
-  !known(token.pronunciation) &&
-  !known(token.reading) &&
+const isUnreadLatinPiece = (token) =>
+  !isKnown(token.pronunciation) &&
+  !isKnown(token.reading) &&
   LATIN_PIECE.test(token.surface_form.normalize("NFKC"));
 
-const isDigitToken = (token) => DIGIT_CHARS.test(token.surface_form);
+const isDigitOrSeparator = (token) => DIGIT_CHARS.test(token.surface_form);
 const isKanjiNumeral = (token) =>
   token.pos === "名詞" && token.pos_detail_1 === "数" && KANJI_NUMERAL.test(token.surface_form);
 
 /**
- * The words that are sung, in order: { start, end, pos, pos1, pron }. Mostly one per token; a
+ * The words that are sung, in order: { start, end, pos, pos1, pron }, and for a number written
+ * in digits or kanji also `number`, its ASCII digits. Mostly one per token; a
  * number is one word however the dictionary cut it (2 . 5, or 三 百), read by numbers.js; a number
  * and its counter are one word when the pair has a reading of its own (1日 ツイタチ). A word of
  * Latin letters is one word however the dictionary cut it (don ' t). A word whose `pron` gives no
@@ -127,94 +164,132 @@ const isKanjiNumeral = (token) =>
  */
 export function wordsOf(speech, tokens, spans, english = null) {
   const words = [];
-  const numberWord = (start, end, number) => ({
-    start,
-    end,
-    pos: "名詞",
-    pos1: "数",
-    pron: readNumber(number),
-    number,
-  });
   let i = 0;
   while (i < tokens.length) {
+    const run =
+      digitRunAt(speech, tokens, spans, i) ??
+      kanjiNumberAt(speech, tokens, spans, i) ??
+      latinWordAt(speech, tokens, spans, i, english);
+    if (run) {
+      words.push(...run.words);
+      i = run.next;
+      continue;
+    }
     const token = tokens[i];
-    // digits, with the commas and full stops between them, in one or more tokens
-    if (isDigitToken(token)) {
-      let last = i;
-      while (last + 1 < tokens.length && isDigitToken(tokens[last + 1])) last += 1;
-      const start = spans[i][0];
-      const end = spans[last][1];
-      const run = speech.slice(start, end);
-      if (HAS_DIGIT.test(run)) {
-        let at = 0;
-        for (const found of numbersIn(run)) {
-          if (found.start > at) words.push(mark(start + at, start + found.start));
-          words.push(numberWord(start + found.start, start + found.end, found.number));
-          at = found.end;
-        }
-        if (at < run.length) words.push(mark(start + at, end));
-        i = last + 1;
-        continue;
-      }
-    }
-    // numerals in kanji with a unit (三百, 二千二十二) or with 〇 (二〇二二)
-    if (isKanjiNumeral(token)) {
-      let last = i;
-      while (last + 1 < tokens.length && isKanjiNumeral(tokens[last + 1])) last += 1;
-      const start = spans[i][0];
-      const end = spans[last][1];
-      const number = end - start > 1 ? kanjiNumber(speech.slice(start, end)) : null;
-      if (number !== null) {
-        words.push(numberWord(start, end, number));
-        i = last + 1;
-        continue;
-      }
-    }
-    // a Latin word cut at its apostrophes or hyphens: letters, then mark and letters, touching
-    if (isLatinToken(token) && /^[A-Za-z]/.test(token.surface_form.normalize("NFKC"))) {
-      let last = i;
-      while (
-        last + 2 < tokens.length &&
-        isLatinToken(tokens[last + 1]) &&
-        isLatinToken(tokens[last + 2]) &&
-        spans[last][1] === spans[last + 1][0] &&
-        spans[last + 1][1] === spans[last + 2][0] &&
-        LATIN_WORD.test(speech.slice(spans[i][0], spans[last + 2][1]).normalize("NFKC"))
-      )
-        last += 2;
-      if (last > i) {
-        const start = spans[i][0];
-        const end = spans[last][1];
-        const pron = readUnknown(speech.slice(start, end), english);
-        words.push({ start, end, pos: token.pos, pos1: token.pos_detail_1, pron });
-        i = last + 1;
-        continue;
-      }
-    }
     words.push({
       start: spans[i][0],
       end: spans[i][1],
       pos: token.pos,
       pos1: token.pos_detail_1,
-      pron: pronOf(token, english),
+      pron: pronunciationOf(token, english),
     });
     i += 1;
   }
-  // a counter after a number keeps its own reading, but 月 is ガツ there, and a few pairs have a
-  // reading of their own (§5.5 step 5)
-  for (let w = 0; w + 1 < words.length; w++) {
-    const number = words[w].number;
-    if (number === undefined || words[w].end !== words[w + 1].start) continue;
-    const counter = speech.slice(words[w + 1].start, words[w + 1].end);
-    const special = readSpecial(number, counter);
-    if (special) {
-      words.splice(w, 2, { ...words[w], end: words[w + 1].end, pron: special, number: undefined });
-    } else if (counter === "月") words[w + 1].pron = "ガツ";
-  }
+  applyCounterReadings(words, speech);
   return words;
 }
 
-const mark = (start, end) => ({ start, end, pos: "記号", pos1: "一般", pron: "" });
+// The three kinds of run that are read as a whole. Each takes the tokens and the index `i` of
+// the token a run may start at, and returns { words, next } (the words of the run and the index
+// of the token after it), or null when no such run starts there.
+
+/** A word with nothing to sing: a comma or a full stop that belongs to no number. */
+const silentWord = (start, end) => ({ start, end, pos: "記号", pos1: "一般", pron: "" });
+
+/** A number written in digits or kanji, as a word: `number` is its ASCII digits. */
+const numberWord = (start, end, number) => ({
+  start,
+  end,
+  pos: "名詞",
+  pos1: "数",
+  pron: readNumber(number),
+  number,
+});
+
+/** Digits, with the commas and full stops between them, in one or more tokens: a word for each
+ * number, and a mark for each comma or full stop that belongs to none. A comma alone is a
+ * "digit token" too, hence the test for a digit in the run. The places that numbersIn gives are
+ * places in its ASCII copy of the run, which has the same length. */
+function digitRunAt(speech, tokens, spans, i) {
+  if (!isDigitOrSeparator(tokens[i])) return null;
+  let lastOfRun = i;
+  while (lastOfRun + 1 < tokens.length && isDigitOrSeparator(tokens[lastOfRun + 1])) lastOfRun += 1;
+  const start = spans[i][0];
+  const end = spans[lastOfRun][1];
+  const digitRun = speech.slice(start, end);
+  if (!HAS_DIGIT.test(digitRun)) return null;
+  const words = [];
+  let covered = 0;
+  for (const found of numbersIn(digitRun)) {
+    if (found.start > covered) words.push(silentWord(start + covered, start + found.start));
+    words.push(numberWord(start + found.start, start + found.end, found.number));
+    covered = found.end;
+  }
+  if (covered < digitRun.length) words.push(silentWord(start + covered, end));
+  return { words, next: lastOfRun + 1 };
+}
+
+/** Numerals in kanji with a unit (三百, 二千二十二) or with 〇 (二〇二二), in two characters or
+ * more: one number word. */
+function kanjiNumberAt(speech, tokens, spans, i) {
+  if (!isKanjiNumeral(tokens[i])) return null;
+  let lastOfRun = i;
+  while (lastOfRun + 1 < tokens.length && isKanjiNumeral(tokens[lastOfRun + 1])) lastOfRun += 1;
+  const start = spans[i][0];
+  const end = spans[lastOfRun][1];
+  const number = end - start > 1 ? kanjiNumber(speech.slice(start, end)) : null;
+  if (number === null) return null;
+  return { words: [numberWord(start, end, number)], next: lastOfRun + 1 };
+}
+
+/** A Latin word cut at its apostrophes or hyphens: letters, then a mark and letters, touching:
+ * one word, read as an unknown word. */
+function latinWordAt(speech, tokens, spans, i, english) {
+  const token = tokens[i];
+  if (!isUnreadLatinPiece(token) || !/^[A-Za-z]/.test(token.surface_form.normalize("NFKC")))
+    return null;
+  let lastOfRun = i;
+  // two tokens at a time: the apostrophe or hyphen, and the letters after it
+  while (
+    lastOfRun + 2 < tokens.length &&
+    isUnreadLatinPiece(tokens[lastOfRun + 1]) &&
+    isUnreadLatinPiece(tokens[lastOfRun + 2]) &&
+    spans[lastOfRun][1] === spans[lastOfRun + 1][0] &&
+    spans[lastOfRun + 1][1] === spans[lastOfRun + 2][0] &&
+    LATIN_WORD.test(speech.slice(spans[i][0], spans[lastOfRun + 2][1]).normalize("NFKC"))
+  )
+    lastOfRun += 2;
+  if (lastOfRun === i) return null;
+  const start = spans[i][0];
+  const end = spans[lastOfRun][1];
+  const pron = readUnknown(speech.slice(start, end), english);
+  return {
+    words: [{ start, end, pos: token.pos, pos1: token.pos_detail_1, pron }],
+    next: lastOfRun + 1,
+  };
+}
+
+/**
+ * Give the counters after numbers their readings, in place (§5.5 step 5). A counter right after
+ * a number keeps its own reading, but 月 is ガツ there, and a few pairs have a reading of their
+ * own (1日 ツイタチ): such a pair becomes one word.
+ */
+function applyCounterReadings(words, speech) {
+  for (let wordIndex = 0; wordIndex + 1 < words.length; wordIndex++) {
+    const number = words[wordIndex].number;
+    if (number === undefined || words[wordIndex].end !== words[wordIndex + 1].start) continue;
+    const counter = speech.slice(words[wordIndex + 1].start, words[wordIndex + 1].end);
+    const special = readSpecial(number, counter);
+    if (special) {
+      words.splice(wordIndex, 2, {
+        ...words[wordIndex],
+        end: words[wordIndex + 1].end,
+        pron: special,
+        number: undefined,
+      });
+    } else if (counter === "月") words[wordIndex + 1].pron = "ガツ";
+  }
+}
 
 /** Whether a word starts a new 文節 after `previous` (§5.5 step 4, ED A-29). */
 export function startsPhrase(word, previous) {
@@ -245,9 +320,10 @@ export function phrasesOf(speech, words) {
   let lastMora = null; // across words: a word may start with a long mark that prolongs it
   let previous = null;
   for (const word of words) {
-    const kana = moraeOf(word.pron, lastMora ? lastMora.k : null);
-    if (!kana.length) {
-      // a comma, a full stop, a bracket, a symbol: a pause, lit with the mora before it
+    const wordSounds = moraeOf(word.pron, lastMora ? lastMora.k : null);
+    if (!wordSounds.length) {
+      // a word with nothing to sing (a comma, a full stop, a bracket, a symbol, a space): a
+      // pause, lit with the mora before it
       if (phrases.length) {
         const phrase = phrases[phrases.length - 1];
         phrase.pause = true;
@@ -256,36 +332,50 @@ export function phrasesOf(speech, words) {
       previous = word;
       continue;
     }
-    const morae = spreadOverCharacters(kana, word.start, word.end);
-    // a word cut in the middle of a syllable (かのじ|ゃちぼう in kana text): its small kana
-    // joins the mora before it, as within a word (§5.5 step 3)
-    const first = morae[0];
-    const joins = first.k.length === 1 && SMALL_KANA.includes(first.k);
-    if (lastMora && !lastMora.long && lastMora.k !== NYAN && joins) {
-      lastMora.k += first.k;
-      lastMora.end = Math.max(lastMora.end, first.end);
-      morae.shift();
-      if (!morae.length) {
-        previous = word;
-        continue;
-      }
+    const morae = spreadOverCharacters(wordSounds, word.start, word.end);
+    joinLeadingSmallKana(lastMora, morae);
+    if (!morae.length) {
+      previous = word;
+      continue;
     }
     lastMora = morae[morae.length - 1];
-    const open = phrases.length ? phrases[phrases.length - 1] : null;
-    if (open && !open.pause && !startsPhrase(word, previous)) open.morae.push(...morae);
+    const openPhrase = phrases.length ? phrases[phrases.length - 1] : null;
+    if (openPhrase && !openPhrase.pause && !startsPhrase(word, previous))
+      openPhrase.morae.push(...morae);
     else phrases.push({ pause: false, morae });
     previous = word;
   }
   for (const phrase of phrases) {
     phrase.morae = fit(phrase.morae).map(({ k, start, end, tails }) => ({ k, start, end, tails }));
   }
-  if (phrases.length) {
-    // marks at the very start and end (「 … 。) light with the first and the last mora
-    phrases[0].morae[0].start = 0;
-    const lastPhrase = phrases[phrases.length - 1];
-    lastPhrase.morae[lastPhrase.morae.length - 1].end = speech.length;
-  }
+  widenToTheEnds(phrases, speech);
   return phrases;
+}
+
+/**
+ * A word cut in the middle of a syllable (かのじ|ゃちぼう in kana text): its small kana joins the
+ * mora before it, as within a word (§5.5 step 3). Both are changed in place: `lastMora` takes the
+ * kana and its characters, and the word's `morae` lose their first. lastMora is the very object
+ * that stands in its phrase, so changing it changes the score; it is kept across a pause. A long
+ * vowel and the unit ニャン take no small kana.
+ */
+function joinLeadingSmallKana(lastMora, morae) {
+  const firstMora = morae[0];
+  const startsWithSmallKana = firstMora.k.length === 1 && SMALL_KANA.includes(firstMora.k);
+  if (lastMora && !lastMora.long && lastMora.k !== NYAN && startsWithSmallKana) {
+    lastMora.k += firstMora.k;
+    lastMora.end = Math.max(lastMora.end, firstMora.end);
+    morae.shift();
+  }
+}
+
+/** Marks at the very start and end of the sentence (「 … 。) light with the first and the last
+ * mora: the first mora starts at 0 and the last ends at the end of the text (in place). */
+function widenToTheEnds(phrases, speech) {
+  if (!phrases.length) return;
+  phrases[0].morae[0].start = 0;
+  const lastPhrase = phrases[phrases.length - 1];
+  lastPhrase.morae[lastPhrase.morae.length - 1].end = speech.length;
 }
 
 /**

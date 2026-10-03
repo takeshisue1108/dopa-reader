@@ -5,15 +5,22 @@
 // Taken from the battle of the accepted test scene (D-48): what an enemy, a volley, a burst, the
 // shout and Elena's hands look like is unchanged. What changed: every enemy is the Kommy-type
 // M.E.O.W (D-110) and carries one noun of the text as its sign; enemies come one at a time
-// (send); a missed enemy leaves spinning over the cockpit (D-82); the boss has hit points (D-102).
-import { drawOutlined, textSprite } from "./pixel.js";
-import { ladderCell } from "./road.js";
+// (send); a robot whose window closes unshot rushes past beside Elena, and one sent away (at a
+// block's end, or to make room on a full road) leaves spinning over the cockpit (D-82); the boss
+// has hit points (D-102). M.E.O.W is the robot model: Elena pilots one, and the enemies are the
+// Kommy type.
+//
+// A robot's life: coming → standing → rushing through its window → either hit (frozen for 4
+// ticks, then shattered) or passed beside Elena; or, at any time, sent away: leaving, spinning,
+// for 30 ticks.
+import { drawOutlined, ladderCell, textSprite } from "./pixel.js";
 import { KZ, Missiles } from "./missiles.js";
 
 const ENEMY_HEIGHT = 88, // at z = 1, in world pixels
   BOSS_HEIGHT = 170;
 const SHOUT_TICKS = 36; // a shout stays 1.2 s (§6.4)
-const LEAVE_TICKS = 30; // a missed enemy passes over the cockpit in 1 s (ST-30)
+const LEAVE_TICKS = 30; // a robot sent away passes over the cockpit in 1 s (ST-30)
+// the ring of a small burst at each of its 12 ticks, as a share of its radius
 const BOOM_RADII = [0.3, 0.6, 0.85, 1, 1.05, 1.05, 1, 0.9, 0.75, 0.55, 0.35, 0.2];
 const LANES = [-46, 0, 46]; // left, middle, right
 const HIT_FLASH_TICKS = 4; // a robot that is hit stops and flashes this long before it explodes
@@ -21,12 +28,14 @@ const RUSH_NEAR = 0.45; // the depth at which a rushing robot passes beside Elen
 const CHARGE_NEAR = 0.7; // where its straight charge ends and the swerve begins (D-141)
 const SWERVE_AT = 0.75; // the part of the window spent charging straight
 const RUSH_DRIFT = 120; // how far it moves to the side of its lane while it rushes
-// how far the left hand reaches forward (up on the screen) in each tick of a button press
+// how far the right hand reaches forward (up on the screen) in each tick of a button press
 const PRESS_REACH = [-3, -7, -7, -7, -7, -7, -5, -3, -1, 0];
 
 export class Battle {
-  /** `sprites`: {cockpit, elena: {back, fist, button}, kommy, boss, button: {up, pressed, lit},
-   * missiles}. `sfx(name)` plays a sound. `smoke()`: whether missiles leave a wake. */
+  /** `sprites`: {cockpit, elena: {back, fist}, kommy, kommyTurn (the robot's turn sheet, or
+   * null), boss (or null), missiles}; kommy, boss and the missiles are ladders (one picture in
+   * several sizes, pixel.js). `sfx(name)` plays a sound. `smoke()`: whether missiles leave a
+   * wake. */
   constructor({ road, sprites, sfx = () => {}, smoke = () => true }) {
     Object.assign(this, { road, sprites, sfx, smoke });
     this.missiles = new Missiles({
@@ -34,9 +43,11 @@ export class Battle {
       ladders: sprites.missiles,
       sfx: () => sfx("launch"),
     });
-    this.lane = 0;
+    this.lane = 0; // how many robots were sent: the next takes the lane after the last one's
     this.pressSide = -1; // the corner the next volley comes from: left, then right, in turn (D-136)
     this.reset();
+    // Elena: her pose ("back", or "fist" until the tick poseUntil), the count of presses (the
+    // fist and the button in turn), and the tick of her last press on the button
     this.pose = "back";
     this.poseUntil = 0;
     this.poseTurn = 0;
@@ -69,6 +80,10 @@ export class Battle {
     const z0 = 11,
       zEnd = 2.2 + 0.15 * (this.standing().length % 6),
       speed = Math.max(0.07, (z0 - zEnd) / Math.max(8, inTicks - 4));
+    // a robot: laneX (its lane, in pixels from the middle at z = 1), z0 and zEnd (where it sets
+    // out and where it stands), born (the tick it was sent), speed (z a tick), sign (its noun);
+    // later: frozen and stopAt (hit: where and when), shatterAt (destroyed), leftAt and leaveFrom
+    // (sent away), forcedAt (rushing after the lever's explosion), passed (gone by, uncounted)
     this.enemies.push({
       id,
       laneX: LANES[this.lane++ % LANES.length],
@@ -85,17 +100,19 @@ export class Battle {
     });
   }
 
-  /** Where each robot is in its window: `progress` maps an enemy id to 0..1, or to a value of 1
-   * or more once its window has closed. A robot past its window has gone by Elena, uncounted. */
+  /** Where each robot is in its window: `progress` maps an enemy id to a value under 0 before
+   * the window opens, 0..1 while it is open, and 1 or more once it has closed. A robot past its
+   * window has gone by Elena, uncounted; one that was shot stays at the end of its rush for its
+   * missile (D-149). */
   setRush(progress) {
     for (const enemy of this.enemies) {
       if (!enemy.alive || enemy.leftAt || enemy.frozen) continue;
-      const p = progress.get(enemy.id);
-      if (p === undefined) continue;
-      if (p >= 1) {
+      const through = progress.get(enemy.id);
+      if (through === undefined) continue;
+      if (through >= 1 && !enemy.aimed) {
         enemy.alive = false;
         enemy.passed = true; // ST-30: not counted
-      } else enemy.rush = Math.max(enemy.rush, Math.max(0, p));
+      } else enemy.rush = Math.max(enemy.rush, Math.min(1, Math.max(0, through)));
     }
   }
 
@@ -104,18 +121,20 @@ export class Battle {
     return this.enemies.find((enemy) => enemy.id === id && enemy.alive && !enemy.leftAt) || null;
   }
 
+  /** The depth z of a robot or of the boss at a tick: coming from z0 to zEnd at its speed; a
+   * robot in its window charges at the cockpit from there; one that is hit stays where it was. */
   depthOf(thing, tick) {
     if (thing.frozen) return thing.frozen.z; // hit: it stops where it is (D-130)
-    const standing = Math.max(thing.zEnd, thing.z0 - Math.max(0, tick - thing.born) * thing.speed);
-    if (!thing.rush) return standing;
+    const waiting = Math.max(thing.zEnd, thing.z0 - Math.max(0, tick - thing.born) * thing.speed);
+    if (!thing.rush) return waiting;
     // in its window the robot charges straight at the cockpit, faster as it comes, and swerves in
     // the last quarter (D-141)
-    const p = thing.rush;
-    if (p < SWERVE_AT) {
-      const q = p / SWERVE_AT;
-      return standing + (CHARGE_NEAR - standing) * q * q;
+    const rush = thing.rush;
+    if (rush < SWERVE_AT) {
+      const charge = rush / SWERVE_AT;
+      return waiting + (CHARGE_NEAR - waiting) * charge * charge;
     }
-    return CHARGE_NEAR + (RUSH_NEAR - CHARGE_NEAR) * ((p - SWERVE_AT) / (1 - SWERVE_AT));
+    return CHARGE_NEAR + (RUSH_NEAR - CHARGE_NEAR) * ((rush - SWERVE_AT) / (1 - SWERVE_AT));
   }
   /** The side a robot swerves to: away from the middle; the middle lane has its own (D-141). */
   sideOf(thing) {
@@ -129,25 +148,40 @@ export class Battle {
   laneOf(thing) {
     if (thing.frozen) return thing.frozen.lane;
     if (!thing.rush) return thing.laneX;
-    const q = this.swerveOf(thing); // straight down its lane, then a sharp curve outward
-    return thing.laneX + this.sideOf(thing) * RUSH_DRIFT * q * q;
+    const swerve = this.swerveOf(thing); // straight down its lane, then a sharp curve outward
+    return thing.laneX + this.sideOf(thing) * RUSH_DRIFT * swerve * swerve;
   }
+  /** Where a robot or the boss is drawn: { x, y (its feet, in world pixels; it bobs by a pixel
+   * every 8 ticks), h (its height there), z }. `heightAtGlass` is its height at z = 1. */
   onScreen(thing, tick, heightAtGlass) {
     const z = this.depthOf(thing, tick),
       feet = this.road.project(this.laneOf(thing), z),
       bob = Math.floor((tick + thing.laneX) / 8) % 2;
     return { x: feet.x, y: feet.y - bob, h: heightAtGlass / z, z };
   }
+  /** What the missiles ask of their target at each tick: a function giving the middle of the
+   * robot or the boss as { X, H, D, vD } at the battle's tick (missiles.js). */
   targetOf(thing, heightAtGlass) {
     return () => {
       const z = this.depthOf(thing, this.now),
         moving = z > thing.zEnd;
-      return { X: this.laneOf(thing), H: heightAtGlass * 0.5, D: z * KZ, vD: moving ? -thing.speed * KZ : 0 };
+      return {
+        X: this.laneOf(thing),
+        H: heightAtGlass * 0.5,
+        D: z * KZ,
+        vD: moving ? -thing.speed * KZ : 0,
+      };
     };
   }
+  /** A small burst where a missile arrived, up to 3 pixels off by chance. */
   boomAt(target, tick, radius) {
     const at = this.road.project3(target.X, target.H, target.D / KZ);
-    this.booms.push({ x: at.x + (Math.random() - 0.5) * 6, y: at.y + (Math.random() - 0.5) * 6, t0: tick, r: radius });
+    this.booms.push({
+      x: at.x + (Math.random() - 0.5) * 6,
+      y: at.y + (Math.random() - 0.5) * 6,
+      t0: tick,
+      r: radius,
+    });
   }
 
   /** The corner of this press's missiles, and the next one's the other (D-136). */
@@ -172,9 +206,12 @@ export class Battle {
   }
 
   /**
-   * A hit (ST-05): a volley of three at the target's enemy. When the first missile arrives the
-   * enemy and its sign shatter with a small burst (D-81, D-95) and `onHit(tick)` is called.
-   * Returns false when the enemy is not on the road (it has not come yet, or it is gone).
+   * A hit (ST-05): a volley of three at the target's enemy. When the first missile arrives,
+   * `onHit(tick)` is called and the enemy stops and flashes; 4 ticks later (in tick()) it and its
+   * sign shatter with a small burst (D-81, D-95). From the shot to that burst the enemy belongs
+   * to its missiles (`aimed`): it does not pass by, leave or meet the lever's explosion (D-149).
+   * Returns false when the enemy is not on the road (it has not come yet, or it is gone) or a
+   * volley is already on its way to it.
    */
   shoot(id, tick, onHit) {
     const enemy = this.enemyOf(id);
@@ -204,34 +241,46 @@ export class Battle {
   miss(tick) {
     this.elenaFires(tick);
     this.missiles.smoke = this.smoke();
-    const X = (Math.random() - 0.5) * 120;
-    this.missiles.volley({ count: 1, side: this.nextSide(), tick, target: () => ({ X, H: 160, D: 12 * KZ, vD: 0 }) });
+    const aimX = (Math.random() - 0.5) * 120;
+    this.missiles.volley({
+      count: 1,
+      side: this.nextSide(),
+      tick,
+      target: () => ({ X: aimX, H: 160, D: 12 * KZ, vD: 0 }),
+    });
     this.sfx("miss");
   }
 
   /**
    * The lever's explosion reaches the road (D-128): the `level` nearest robots are destroyed by
-   * the blast (not counted), and the others rush toward the cockpit over 20 ticks and leave.
-   * Returns the ids of every robot that was on the road.
+   * the blast (not counted), and the others rush past the cockpit over 20 ticks and are gone.
+   * A robot that was shot is left to its missile (D-149). Returns the ids of the robots it
+   * reached.
    */
   blastRoad(level, tick) {
-    const standing = this.standing().filter((enemy) => tick >= enemy.born);
-    standing.sort((a, b) => this.depthOf(a, tick) - this.depthOf(b, tick));
-    standing.forEach((enemy, k) => {
-      if (k < level) {
+    const standing = this.standing().filter((enemy) => tick >= enemy.born && !enemy.aimed);
+    standing.sort((one, other) => this.depthOf(one, tick) - this.depthOf(other, tick));
+    standing.forEach((enemy, rank) => {
+      if (rank < level) {
         const at = this.onScreen(enemy, tick, ENEMY_HEIGHT);
         enemy.alive = false;
-        enemy.shatterAt = tick + k * 3;
-        this.booms.push({ x: at.x, y: at.y - at.h * 0.5, t0: tick + k * 3, r: Math.max(8, at.h * 0.35) });
+        enemy.shatterAt = tick + rank * 3;
+        this.booms.push({
+          x: at.x,
+          y: at.y - at.h * 0.5,
+          t0: tick + rank * 3,
+          r: Math.max(8, at.h * 0.35),
+        });
       } else enemy.forcedAt = tick;
     });
     return standing.map((enemy) => enemy.id);
   }
 
-  /** Enemies leave over the cockpit, spinning, and are not counted (ST-30). `ids` null: all. */
+  /** Enemies leave over the cockpit, spinning, and are not counted (ST-30). `ids` null: all. One
+   * that was shot does not leave: its missile is on its way (D-149). */
   leave(ids, tick) {
     for (const enemy of this.enemies)
-      if (enemy.alive && !enemy.leftAt && (!ids || ids.includes(enemy.id))) {
+      if (enemy.alive && !enemy.leftAt && !enemy.aimed && (!ids || ids.includes(enemy.id))) {
         enemy.leftAt = tick;
         enemy.leaveFrom = this.onScreen(enemy, tick, ENEMY_HEIGHT);
       }
@@ -241,9 +290,21 @@ export class Battle {
   /** The boss sets out with `hp` hit points; it stands before the glass after 5 s. */
   bossComes(tick, hp) {
     if (!this.sprites.boss) return;
-    this.boss = { laneX: 0, z0: 11, zEnd: 3.4, born: tick, speed: 0.05, alive: true, hp, hpMax: Math.max(hp, 1), hitAt: -99, gone: null };
+    this.boss = {
+      laneX: 0,
+      z0: 11,
+      zEnd: 3.4,
+      born: tick,
+      speed: 0.05,
+      alive: true,
+      hp,
+      hpMax: Math.max(hp, 1),
+      hitAt: -99,
+      gone: null,
+    };
   }
-  /** One missile at the boss with a heavier burst; resolves its hit point when it arrives. */
+  /** One missile at the boss with a heavier burst; when it arrives the boss loses one hit point,
+   * and at 0 it falls (`onFall()`). */
   bossHit(tick, onFall) {
     const boss = this.boss;
     if (!boss || !boss.alive || boss.gone) return;
@@ -270,6 +331,7 @@ export class Battle {
     boss.hp = Math.max(0, boss.hp - n);
     if (boss.hp === 0) this.bossFalls(tick, onFall);
   }
+  /** The boss is out of hit points: six bursts across it, its sound, and `onFall()`; once. */
   bossFalls(tick, onFall) {
     const boss = this.boss;
     if (!boss.alive) return;
@@ -277,7 +339,12 @@ export class Battle {
     boss.deadAt = tick;
     const at = this.onScreen(boss, tick, BOSS_HEIGHT);
     for (let k = 0; k < 6; k++)
-      this.booms.push({ x: at.x + (k - 2.5) * 10, y: at.y - at.h * (0.3 + 0.1 * (k % 3)), t0: tick + k * 4, r: 26 });
+      this.booms.push({
+        x: at.x + (k - 2.5) * 10,
+        y: at.y - at.h * (0.3 + 0.1 * (k % 3)),
+        t0: tick + k * 4,
+        r: 26,
+      });
     this.sfx("boss_fall");
     onFall && onFall();
   }
@@ -286,6 +353,9 @@ export class Battle {
     if (this.boss && this.boss.alive) this.boss.gone = { t0: tick, spinning };
   }
 
+  /** One tick: a hit robot explodes after its flash, the robots sent off by the lever's explosion
+   * rush, the missiles fly, and what is over (bursts, the shout, robots that left or were
+   * destroyed) is dropped. */
   tick(tick) {
     this.now = tick;
     for (const enemy of this.enemies)
@@ -298,17 +368,20 @@ export class Battle {
     // robots sent away by the lever's explosion rush in 20 ticks (D-128)
     for (const enemy of this.enemies)
       if (enemy.forcedAt !== undefined && enemy.alive && !enemy.leftAt) {
-        const p = (tick - enemy.forcedAt) / 20;
-        if (p >= 1) {
+        const through = (tick - enemy.forcedAt) / 20;
+        if (through >= 1) {
           enemy.alive = false;
           enemy.passed = true;
-        } else enemy.rush = Math.max(enemy.rush, p);
+        } else enemy.rush = Math.max(enemy.rush, through);
       }
     this.missiles.tick(tick);
     this.booms = this.booms.filter((boom) => tick - boom.t0 <= 11);
     if (this.shout && tick - this.shout.t0 > SHOUT_TICKS) this.shout = null;
     this.enemies = this.enemies.filter(
-      (enemy) => (enemy.alive && !enemy.leftAt) || (enemy.leftAt && tick - enemy.leftAt <= LEAVE_TICKS) || (!enemy.alive && !enemy.passed && tick - enemy.shatterAt <= 8),
+      (enemy) =>
+        (enemy.alive && !enemy.leftAt) ||
+        (enemy.leftAt && tick - enemy.leftAt <= LEAVE_TICKS) ||
+        (!enemy.alive && !enemy.passed && tick - enemy.shatterAt <= 8),
     );
   }
 
@@ -317,10 +390,10 @@ export class Battle {
    * and charging, it faces the user; swerving, it turns a quarter toward the side it goes to
    * (D-141). Scaled to its depth with hard pixels.
    */
-  drawRobot(m, enemy, at, tick) {
+  drawRobot(ctx, enemy, at, tick) {
     const turn = this.sprites.kommyTurn;
-    if (!turn) return this.drawSprite(m, this.sprites.kommy, at.x, at.y, at.h * 1.05);
-    const { img, meta } = turn;
+    if (!turn) return this.drawSprite(ctx, this.sprites.kommy, at.x, at.y, at.h * 1.05);
+    const { img: sheet, meta } = turn;
     let frame = 0;
     if (enemy.frozen) frame = enemy.frozenFrame ?? (enemy.frozenFrame = enemy.lastFrame || 0);
     else if (enemy.rush) {
@@ -330,37 +403,78 @@ export class Battle {
     }
     frame = ((frame % meta.frames) + meta.frames) % meta.frames;
     enemy.lastFrame = frame;
-    const h = Math.max(4, Math.round(at.h * 1.25)), // the cell is a little taller than the robot
-      w = Math.round((h * meta.w) / meta.h);
-    const smooth = m.imageSmoothingEnabled;
-    m.imageSmoothingEnabled = false;
-    m.drawImage(img, (frame % meta.cols) * meta.w, Math.floor(frame / meta.cols) * meta.h, meta.w, meta.h, Math.round(at.x - w / 2), Math.round(at.y - h), w, h);
-    m.imageSmoothingEnabled = smooth;
+    // the cell is a little taller than the robot
+    const height = Math.max(4, Math.round(at.h * 1.25)),
+      width = Math.round((height * meta.w) / meta.h);
+    const smooth = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(
+      sheet,
+      (frame % meta.cols) * meta.w,
+      Math.floor(frame / meta.cols) * meta.h,
+      meta.w,
+      meta.h,
+      Math.round(at.x - width / 2),
+      Math.round(at.y - height),
+      width,
+      height,
+    );
+    ctx.imageSmoothingEnabled = smooth;
   }
 
-  drawSprite(m, sprite, centerX, footY, height, angle = 0) {
+  /** Draw a ladder sprite at the size nearest to `height`, standing on (centerX, footY); with an
+   * angle, turned about its middle. */
+  drawSprite(ctx, sprite, centerX, footY, height, angle = 0) {
     const cell = ladderCell(sprite.meta, height);
     if (!angle) {
-      m.drawImage(sprite.img, cell.x, sprite.meta.H - cell.h, cell.w, cell.h, Math.round(centerX - cell.w / 2), Math.round(footY - cell.h), cell.w, cell.h);
+      ctx.drawImage(
+        sprite.img,
+        cell.x,
+        sprite.meta.H - cell.h,
+        cell.w,
+        cell.h,
+        Math.round(centerX - cell.w / 2),
+        Math.round(footY - cell.h),
+        cell.w,
+        cell.h,
+      );
       return;
     }
-    m.save();
-    m.translate(Math.round(centerX), Math.round(footY - cell.h / 2));
-    m.rotate(angle);
-    m.drawImage(sprite.img, cell.x, sprite.meta.H - cell.h, cell.w, cell.h, -Math.round(cell.w / 2), -Math.round(cell.h / 2), cell.w, cell.h);
-    m.restore();
+    ctx.save();
+    ctx.translate(Math.round(centerX), Math.round(footY - cell.h / 2));
+    ctx.rotate(angle);
+    ctx.drawImage(
+      sprite.img,
+      cell.x,
+      sprite.meta.H - cell.h,
+      cell.w,
+      cell.h,
+      -Math.round(cell.w / 2),
+      -Math.round(cell.h / 2),
+      cell.w,
+      cell.h,
+    );
+    ctx.restore();
   }
 
-  /** The enemies and the boss (the farthest first), the missiles and the bursts. */
-  drawWorld(m, tick) {
+  /** The enemies and the boss (the farthest first), the missiles and the bursts, on a world
+   * layer. It also notes where each robot and the boss were drawn (`screen`), which drawSigns
+   * reads: call it before drawSigns in a tick. */
+  drawWorld(ctx, tick) {
     const { sprites, boss } = this;
     const things = [];
-    if (boss && (boss.alive || tick - boss.deadAt < 12)) things.push({ boss: true, z: this.depthOf(boss, tick) });
+    if (boss && (boss.alive || tick - boss.deadAt < 12))
+      things.push({ boss: true, z: this.depthOf(boss, tick) });
     for (const enemy of this.enemies)
-      if (tick >= enemy.born && !enemy.passed && (enemy.alive || (!enemy.alive && tick - enemy.shatterAt < 3))) things.push({ enemy, z: enemy.leftAt ? 0.5 : this.depthOf(enemy, tick) });
+      if (
+        tick >= enemy.born &&
+        !enemy.passed &&
+        (enemy.alive || (!enemy.alive && tick - enemy.shatterAt < 3))
+      )
+        things.push({ enemy, z: enemy.leftAt ? 0.5 : this.depthOf(enemy, tick) });
     things.sort((one, other) => other.z - one.z);
     for (const thing of things) {
-      if (thing.boss) this.drawBoss(m, tick);
+      if (thing.boss) this.drawBoss(ctx, tick);
       else {
         const enemy = thing.enemy;
         if (enemy.leftAt) {
@@ -370,31 +484,44 @@ export class Battle {
             x = from.x + (from.x < 213 ? -1 : 1) * age * 160,
             y = from.y - age * 220,
             h = from.h * (1 + age * 1.6);
-          this.drawSprite(m, sprites.kommy, x, y, h, ((tick - enemy.leftAt) / 8) * Math.PI * 2);
+          this.drawSprite(ctx, sprites.kommy, x, y, h, ((tick - enemy.leftAt) / 8) * Math.PI * 2);
           enemy.screen = null;
         } else if (enemy.alive) {
           const at = this.onScreen(enemy, tick, ENEMY_HEIGHT);
           // a hit robot flashes, shown every other tick (D-130)
-          if (!(enemy.frozen && (tick - enemy.stopAt) % 2)) this.drawRobot(m, enemy, at, tick);
+          if (!(enemy.frozen && (tick - enemy.stopAt) % 2)) this.drawRobot(ctx, enemy, at, tick);
           enemy.screen = at;
         }
       }
     }
-    this.missiles.draw(m, tick);
+    this.missiles.draw(ctx, tick);
+    this.drawBooms(ctx, tick);
+  }
+
+  /** The small bursts: a ring of 12 squares that grows and fades through four colors in 12 ticks,
+   * with a square in the middle for the first 4. */
+  drawBooms(ctx, tick) {
     for (const boom of this.booms) {
       const age = tick - boom.t0;
       if (age < 0 || age > 11) continue;
       const radius = boom.r * BOOM_RADII[age];
-      m.fillStyle = age < 3 ? "#ffffff" : age < 6 ? "#ffcf3f" : age < 9 ? "#e0603a" : "#6a4a50";
+      ctx.fillStyle = age < 3 ? "#ffffff" : age < 6 ? "#ffcf3f" : age < 9 ? "#e0603a" : "#6a4a50";
       for (let k = 0; k < 12; k++) {
         const angle = k * 0.52 + age * 0.15;
-        m.fillRect(Math.round(boom.x + Math.cos(angle) * radius) - 2, Math.round(boom.y + Math.sin(angle) * radius * 0.8) - 2, 4, 4);
+        ctx.fillRect(
+          Math.round(boom.x + Math.cos(angle) * radius) - 2,
+          Math.round(boom.y + Math.sin(angle) * radius * 0.8) - 2,
+          4,
+          4,
+        );
       }
-      if (age < 4) m.fillRect(Math.round(boom.x) - 3, Math.round(boom.y) - 3, 6, 6);
+      if (age < 4) ctx.fillRect(Math.round(boom.x) - 3, Math.round(boom.y) - 3, 6, 6);
     }
   }
 
-  drawBoss(m, tick) {
+  /** The boss: standing, hidden for 2 ticks when hit (a blink), sinking when it has fallen, and
+   * leaving for 30 ticks (into the distance, or spinning away to the upper right). */
+  drawBoss(ctx, tick) {
     const boss = this.boss;
     let at = this.onScreen(boss, tick, BOSS_HEIGHT),
       angle = 0;
@@ -407,111 +534,142 @@ export class Battle {
       } else at = { ...at, y: at.y - age * 20, h: at.h * (1 - age * 0.8) };
     }
     const sink = boss.alive ? 0 : (tick - boss.deadAt) * 4;
-    if (tick - boss.hitAt >= 2) this.drawSprite(m, this.sprites.boss, at.x, at.y + sink, at.h, angle);
+    if (tick - boss.hitAt >= 2)
+      this.drawSprite(ctx, this.sprites.boss, at.x, at.y + sink, at.h, angle);
     boss.screen = boss.alive && !boss.gone ? at : null;
   }
 
   /** The cockpit and Elena from behind (D-39), as in the test scene, except that the launch button
    * and the pressing hand moved to the right (D-104), so that 「爆発」 has the left. `typing`: the
    * song is running, so her hands step in turn. A press: the right hand reaches onto the button. */
-  drawCockpit(f, tick, typing, seated = true) {
+  drawCockpit(ctx, tick, typing, seated = true) {
     const { sprites, road } = this;
-    f.save();
-    f.translate(213, 120);
-    f.rotate(-road.tilt * 0.05);
-    f.scale(1.1, 1.1);
-    f.translate(-213, -120);
-    f.drawImage(sprites.cockpit, 0, 0);
+    ctx.save();
+    ctx.translate(213, 120);
+    ctx.rotate(-road.tilt * 0.05);
+    ctx.scale(1.1, 1.1);
+    ctx.translate(-213, -120);
+    ctx.drawImage(sprites.cockpit, 0, 0);
     if (!seated) {
-      f.restore();
-      return; // the book list: Elena has not boarded yet (D-97)
+      ctx.restore();
+      return; // Elena has not boarded yet (D-97); no caller asks for this today
     }
-    const posed = tick < this.poseUntil && sprites.elena[this.pose] ? sprites.elena[this.pose] : sprites.elena.back,
+    const posed =
+        tick < this.poseUntil && sprites.elena[this.pose]
+          ? sprites.elena[this.pose]
+          : sprites.elena.back,
       place = posed.meta,
       breathe = Math.floor(tick / 24) % 2,
       keys = posed === sprites.elena.back && typing,
       beat = Math.floor(tick / 3) % 2,
       sway = Math.round(road.swayX);
-    f.translate(213, 240);
-    f.rotate(-road.swayX * 0.004);
-    f.translate(-213, -240);
+    ctx.translate(213, 240);
+    ctx.rotate(-road.swayX * 0.004);
+    ctx.translate(-213, -240);
     const pressAge = tick - this.pressAt,
       reach = pressAge >= 0 && pressAge < 10 ? PRESS_REACH[pressAge] : 0;
-    // the launch button is the blue missile at the far right of the console (D-126, cockpit.js)
-    f.drawImage(posed.body, place.body[0] + sway, place.body[1] + breathe);
-    f.drawImage(posed.l, place.hand_l[0] + sway, place.hand_l[1] + (keys && beat ? -1 : 0));
+    // (the button her right hand reaches for is the blue missile that cockpit.js draws, D-126)
+    ctx.drawImage(posed.body, place.body[0] + sway, place.body[1] + breathe);
+    ctx.drawImage(posed.l, place.hand_l[0] + sway, place.hand_l[1] + (keys && beat ? -1 : 0));
     const rightY = place.hand_r[1] + reach + (keys && !beat && !reach ? -1 : 0);
     if (reach < 0) {
       // reaching forward: the wrist stretches, so the hand never parts from the sleeve
-      const w = posed.r.width,
-        h = posed.r.height,
+      const width = posed.r.width,
+        height = posed.r.height,
         wrist = 5;
-      f.drawImage(posed.r, 0, h - wrist, w, wrist, place.hand_r[0] + sway, rightY + h - wrist, w, wrist - reach);
+      ctx.drawImage(
+        posed.r,
+        0,
+        height - wrist,
+        width,
+        wrist,
+        place.hand_r[0] + sway,
+        rightY + height - wrist,
+        width,
+        wrist - reach,
+      );
     }
-    f.drawImage(posed.r, place.hand_r[0] + sway, rightY);
-    f.restore();
+    ctx.drawImage(posed.r, place.hand_r[0] + sway, rightY);
+    ctx.restore();
   }
 
   /** Each standing enemy's noun as a sign over its head once it is near enough to read; the
-   * enemy whose window is open wears targeting brackets (ST-28). `open` is a Set of ids. */
-  drawSigns(f, open = new Set(), tick = 0) {
-    const drawn = [];
+   * enemy whose window is open wears targeting brackets (ST-28); and the boss's hit points.
+   * `open` is a Set of ids. Drawn on the text layer: one world pixel is two text pixels, hence
+   * the `* 2`. */
+  drawSigns(ctx, open = new Set(), tick = 0) {
+    const placed = [];
     const readable = this.enemies
-      .filter((enemy) => enemy.sign && enemy.alive && !enemy.leftAt && enemy.screen && enemy.screen.h >= 30)
+      .filter(
+        (enemy) =>
+          enemy.sign && enemy.alive && !enemy.leftAt && enemy.screen && enemy.screen.h >= 30,
+      )
       .sort((one, other) => other.screen.z - one.screen.z);
     for (const enemy of readable) {
       const at = enemy.screen,
         x = Math.round(at.x * 2 - enemy.sign.w / 2);
       let y = Math.round((at.y - at.h) * 2 - enemy.sign.h - 4);
-      for (const box of drawn)
-        if (x < box.x + box.w + 8 && box.x < x + enemy.sign.w + 8 && Math.abs(y - box.y) < box.h + 4) y = box.y - enemy.sign.h - 6;
-      drawn.push({ x, y, w: enemy.sign.w, h: enemy.sign.h });
-      f.fillStyle = "#1d1a2e";
-      f.fillRect(x - 3, y - 1, enemy.sign.w + 6, enemy.sign.h + 2);
-      f.fillStyle = "#7fe0ff";
-      f.fillRect(x - 3, y - 1, enemy.sign.w + 6, 1);
-      f.fillRect(x - 3, y + enemy.sign.h, enemy.sign.w + 6, 1);
-      drawOutlined(f, enemy.sign.fill, enemy.sign.ink, x, y);
-      if (open.has(enemy.id)) this.drawBrackets(f, at, tick);
+      for (const box of placed)
+        if (
+          x < box.x + box.w + 8 &&
+          box.x < x + enemy.sign.w + 8 &&
+          Math.abs(y - box.y) < box.h + 4
+        )
+          y = box.y - enemy.sign.h - 6;
+      placed.push({ x, y, w: enemy.sign.w, h: enemy.sign.h });
+      ctx.fillStyle = "#1d1a2e";
+      ctx.fillRect(x - 3, y - 1, enemy.sign.w + 6, enemy.sign.h + 2);
+      ctx.fillStyle = "#7fe0ff";
+      ctx.fillRect(x - 3, y - 1, enemy.sign.w + 6, 1);
+      ctx.fillRect(x - 3, y + enemy.sign.h, enemy.sign.w + 6, 1);
+      drawOutlined(ctx, enemy.sign.fill, enemy.sign.ink, x, y);
+      if (open.has(enemy.id)) this.drawBrackets(ctx, at, tick);
     }
     const boss = this.boss;
-    if (boss && boss.screen && boss.hpMax) this.drawHp(f, boss);
+    if (boss && boss.screen && boss.hpMax) this.drawHp(ctx, boss);
   }
-  drawBrackets(f, at, tick) {
+  /** Four corner brackets around a robot that can be shot now, on the text layer; they pulse
+   * every 4 ticks. */
+  drawBrackets(ctx, at, tick) {
     const pulse = Math.floor(tick / 4) % 2 ? 2 : 0,
       w = Math.round(at.h * 1.4) + pulse * 2,
       h = Math.round(at.h * 2) + pulse * 2,
       x = Math.round(at.x * 2 - w / 2),
       y = Math.round((at.y - at.h) * 2 - pulse),
       arm = 8;
-    f.fillStyle = "#ff5f7a";
-    for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
-      f.fillRect(dx > 0 ? cx : cx - arm, cy - (dy > 0 ? 0 : 2), arm, 2);
-      f.fillRect(cx - (dx > 0 ? 0 : 2), dy > 0 ? cy : cy - arm, 2, arm);
+    ctx.fillStyle = "#ff5f7a";
+    for (const [cornerX, cornerY, dx, dy] of [
+      [x, y, 1, 1],
+      [x + w, y, -1, 1],
+      [x, y + h, 1, -1],
+      [x + w, y + h, -1, -1],
+    ]) {
+      ctx.fillRect(dx > 0 ? cornerX : cornerX - arm, cornerY - (dy > 0 ? 0 : 2), arm, 2);
+      ctx.fillRect(cornerX - (dx > 0 ? 0 : 2), dy > 0 ? cornerY : cornerY - arm, 2, arm);
     }
   }
   /** The boss's hit points: a bar of cells over it (ST-35). */
-  drawHp(f, boss) {
+  drawHp(ctx, boss) {
     const at = boss.screen,
       cell = 12,
       gap = 2,
-      w = boss.hpMax * (cell + gap) - gap,
-      x = Math.round(at.x * 2 - w / 2),
+      width = boss.hpMax * (cell + gap) - gap,
+      x = Math.round(at.x * 2 - width / 2),
       y = Math.round((at.y - at.h) * 2 - 16);
-    f.fillStyle = "#1d1a2e";
-    f.fillRect(x - 2, y - 2, w + 4, 12);
+    ctx.fillStyle = "#1d1a2e";
+    ctx.fillRect(x - 2, y - 2, width + 4, 12);
     for (let k = 0; k < boss.hpMax; k++) {
-      f.fillStyle = k < boss.hp ? "#ff5f7a" : "#3a3040";
-      f.fillRect(x + k * (cell + gap), y, cell, 8);
+      ctx.fillStyle = k < boss.hp ? "#ff5f7a" : "#3a3040";
+      ctx.fillRect(x + k * (cell + gap), y, cell, 8);
     }
   }
 
   /** Elena's call, rising a little, at the left of the glass. */
-  drawShouts(f, tick) {
+  drawShouts(ctx, tick) {
     const shout = this.shout;
     if (!shout) return;
     const age = tick - shout.t0;
     // above the bomb at the lower left (D-104), clear of 「爆発」 and of the caption
-    drawOutlined(f, shout.sprite.fill, shout.sprite.ink, 28, 286 - Math.min(6, age));
+    drawOutlined(ctx, shout.sprite.fill, shout.sprite.ink, 28, 286 - Math.min(6, age));
   }
 }

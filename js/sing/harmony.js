@@ -14,21 +14,25 @@ export const MODES = {
 };
 export const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 export const LO = 53,
-  HI = 77; // the bank's range, F3 to F5 (SD-S04)
+  HI = 77; // the range of the voice bank's recordings (bank.js), F3 to F5 (SD-S04)
 
 /** A note name as a pitch class, 0 (C) to 11 (B): "F#" -> 6, "Bb" -> 10. */
 export const pitchClass = (name) =>
   (NOTE[name[0]] + (name.match(/#/g) || []).length - (name.match(/b/g) || []).length + 12) % 12;
 
-/** The key in force at a beat: the last key change at or before it. */
+/** The key in force at a beat: the last entry of the list at or before it; the first entry when
+ * none is. */
 export function keyAt(keys, beat) {
   let key = keys[0];
   for (const candidate of keys) if (candidate.beat <= beat) key = candidate;
   return key;
 }
 
-// The chord of a slot: slot k of a progression is at beat 1 + k / 2. During a rest chord the melody
-// keeps the chord before it (`rest` tells the pad to be silent).
+/** The chord of a slot, as { chord, key, rest }: slot k of a progression is at beat 1 + k / 2.
+ * During a rest chord the melody keeps the chord before it (or, before any chord has sounded, the
+ * first that will), and `rest` is true. A chord lasts until the next entry (its `duration` is not
+ * read); `key` is the key in force where the chosen chord starts, the key its degrees are written
+ * in. The chords must be in order. */
 export function chordAt(progression, slot) {
   const beat = 1 + slot / 2;
   let current = null,
@@ -41,18 +45,20 @@ export function chordAt(progression, slot) {
   const chord =
     current && !current.isRest
       ? current
-      : lastSounding || progression.chords.find((chord) => !chord.isRest);
+      : lastSounding || progression.chords.find((candidate) => !candidate.isRest);
   return { chord, key: keyAt(progression.keys, chord.beat), rest: !current || current.isRest };
 }
 
 /** How many slots a progression lasts (2 to a beat), filled up to a whole bar of 8. */
 export const slotsOf = (progression) => {
-  const end = Math.max(...progression.chords.map((chord) => chord.beat + chord.duration - 1)); // beats, counted from 1
+  // the number of the last beat (beats are counted from 1), which is the count of beats
+  const end = Math.max(...progression.chords.map((chord) => chord.beat + chord.duration - 1));
   return Math.ceil(end / 4) * 8; // filled to a whole bar
 };
 
-// The scale a chord is read in: the key's, or the mode named by `borrowed` on the same tonic; with
-// `applied` = n the chord is degree n of the major scale built on degree `root` of that scale.
+/** The scale a chord is read in, as { tonic, scale, degree }: the key's, or the mode named by
+ * `borrowed` on the same tonic; with `applied` = n the chord is degree n of the major scale built
+ * on degree `root` of that scale. */
 export function local(chord, key) {
   const tonic = pitchClass(key.tonic);
   let scale = MODES[key.scale] || MODES.major;
@@ -66,14 +72,17 @@ export function local(chord, key) {
   return { tonic, scale, degree: chord.root };
 }
 
-// Semitones from the chord's root up to its scale step: 1 is the root, 2 the next scale note, 8 the octave, 0 the note below.
-export function semis(scale, degree, step) {
-  const index = degree - 1 + step - 1;
-  return scale[((index % 7) + 7) % 7] + 12 * Math.floor(index / 7) - scale[(degree - 1) % 7];
+/** Semitones from the chord's root up to its scale step: 1 is the root, 2 the next scale note, 8
+ * the octave, 0 the note below. */
+export function semis(scale, rootDegree, stepFromRoot) {
+  const index = rootDegree - 1 + stepFromRoot - 1;
+  return scale[((index % 7) + 7) % 7] + 12 * Math.floor(index / 7) - scale[(rootDegree - 1) % 7];
 }
 
 /** A chord's notes as pitch classes: {root, bass, pcs}, with the scale and the degree it is
- * read in. Sevenths and ninths, suspensions, added and omitted notes and inversions are applied. */
+ * read in. Sevenths and ninths, suspensions, added and omitted notes and inversions are applied
+ * (a type above 9 adds no more than the seventh and the ninth; `alterations`, `pedal` and
+ * `substitutions` are not read). `pcs` are the chord's tones without the bass. */
 export function tones(chord, key) {
   const { tonic, scale, degree } = local(chord, key);
   const root = (tonic + scale[degree - 1]) % 12;
@@ -88,7 +97,9 @@ export function tones(chord, key) {
   return { root, bass, pcs: steps.map(pitchClassOf), scale, degree };
 }
 
-// The pitch of a fragment step over a chord (§6.4.4): the root sits from LO+2 to LO+13.
+/** The MIDI pitch of a fragment step over a chord (§6.4.4): the root sits from LO+2 to LO+13, and
+ * a step that would go above HI is sung an octave lower. (The last loop, for a pitch below `lo`,
+ * can only matter for a range other than the default one.) */
 export function noteOf(chord, key, step, lo = LO, hi = HI) {
   const { root, scale, degree } = tones(chord, key);
   let rootPitch = root + 48;
@@ -99,7 +110,8 @@ export function noteOf(chord, key, step, lo = LO, hi = HI) {
   return pitch;
 }
 
-// A chord's name, for tests and the test page.
+/** A chord's name ("D#m7", "rest"): for the plan's chord names, the conductor's chord log, the
+ * tests and the test page. Sharps only. */
 export function chordName(chord, key) {
   if (chord.isRest) return "rest";
   const { root, bass, scale, degree } = tones(chord, key);

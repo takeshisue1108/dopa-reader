@@ -4,10 +4,11 @@
 // hard-wrapped file (the test of text.js) the lines of a paragraph are joined up to a sentence
 // end, and a blank line always ends a block. A pipe table is one figure block of kind "table".
 // An image with a full URL is a figure block; one with a relative path is dropped. Footnote
-// definitions are dropped. Lists and quotes are text blocks, one per item.
+// definitions are dropped. Lists and quotes are text blocks, one per item in a soft-wrapped file.
+// Every non-blank line inside a fenced block is a text block, read as it is written.
 
 import { BookBuilder, baseName, plainSpoken } from "./model.js";
-import { detectLang, endsSentence, joinLines } from "./sentences.js";
+import { endsSentence } from "./sentences.js";
 import { isHardWrapped } from "./text.js";
 
 const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
@@ -21,7 +22,8 @@ const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 const IMAGE = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 const FULL_URL = /^https?:\/\//i;
 
-/** Markdown inline syntax to plain display text (adapter clean_inline, without images). */
+/** Markdown inline syntax to plain display text (adapter clean_inline). Images are taken out by
+ * the caller before: here `![a](b)` would come out as `!a`. */
 export function cleanInline(text) {
   return text
     .replace(/\[\^[^\]]+\]/g, "")
@@ -38,7 +40,7 @@ export function cleanInline(text) {
 }
 
 /** The cells of a pipe table row. */
-function cells(row) {
+function cellsOf(row) {
   return row
     .trim()
     .replace(/^\|/, "")
@@ -47,31 +49,30 @@ function cells(row) {
     .map((cell) => cleanInline(cell.trim()));
 }
 
-/** Remove front matter (--- … --- at the top) and HTML comments; return the lines and the front matter. */
-function strip(text) {
-  let body = text.replace(/^﻿/, "");
+/** Remove front matter (--- … --- at the top) and HTML comments; return the lines, and the title
+ * and the author of the front matter as `meta`. */
+function splitFrontMatter(text) {
+  let body = text.replace(/^\uFEFF/, "");
   const meta = {};
-  const front = body.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(\r?\n|$)/);
-  if (front) {
-    for (const line of front[1].split(/\r?\n/)) {
+  const frontMatter = body.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(\r?\n|$)/);
+  if (frontMatter) {
+    for (const line of frontMatter[1].split(/\r?\n/)) {
       const pair = line.match(/^(title|author)\s*:\s*(.+?)\s*$/i);
       if (pair) meta[pair[1].toLowerCase()] = pair[2].replace(/^["']|["']$/g, "");
     }
-    body = body.slice(front[0].length);
+    body = body.slice(frontMatter[0].length);
   }
   body = body.replace(/<!--[\s\S]*?-->/g, "");
   return { lines: body.split(/\r?\n/), meta };
 }
 
 /**
- * Parse a Markdown text (already decoded) into the book model.
- * The title is the front matter's `title`, else a single level-1 heading that is the first
- * heading, else the file name; the author is the front matter's `author`.
- * @param {string} text
- * @param {{name?: string, key?: string|null}} options
+ * The lines that count when a file is judged hard-wrapped or not (the test of text.js): the lines
+ * of paragraphs, of quotes and of list items without their marks, and every line inside a fenced
+ * block. Headings, table rows, footnote definitions, rule lines and lines that are only an image
+ * do not count.
  */
-export function parseMarkdown(text, { name = "", key = null } = {}) {
-  const { lines, meta } = strip(text);
+function paragraphLinesOf(lines) {
   const paragraphLines = [];
   let inFence = false;
   for (const line of lines) {
@@ -87,36 +88,63 @@ export function parseMarkdown(text, { name = "", key = null } = {}) {
     )
       paragraphLines.push(line.replace(QUOTE, "").replace(LIST_ITEM, ""));
   }
-  const hard = isHardWrapped(paragraphLines);
+  return paragraphLines;
+}
+
+/**
+ * The title a Markdown file gives itself, or null: the front matter's `title`; else the first
+ * heading, when it is of level 1 and the only heading of level 1. `headings` are [level, words]
+ * in order.
+ */
+function titleOf(meta, headings) {
+  let title = meta.title ?? null;
+  if (
+    !title &&
+    headings.length &&
+    headings[0][0] === 1 &&
+    headings.filter(([level]) => level === 1).length === 1
+  )
+    title = headings[0][1];
+  return title;
+}
+
+/**
+ * Parse a Markdown text (already decoded) into the book model.
+ * The title is the front matter's `title`, else a single level-1 heading that is the first
+ * heading, else the file name; the author is the front matter's `author`.
+ * @param {string} text
+ * @param {{name?: string, key?: string|null}} options
+ */
+export function parseMarkdown(text, { name = "", key = null } = {}) {
+  const { lines, meta } = splitFrontMatter(text);
+  const hardWrapped = isHardWrapped(paragraphLinesOf(lines));
 
   const builder = new BookBuilder();
   const headings = []; // [level, text] in order
-  let open = []; // lines of the block being joined (hard-wrapped files)
+  let pending = []; // the lines of the block being joined, not yet a block (hard-wrapped files)
   const flush = () => {
-    if (!open.length) return;
-    const lang = detectLang(open.join(""));
-    builder.text(plainSpoken(joinLines(open, lang)), { lang });
-    open = [];
+    builder.addParagraph(pending);
+    pending = [];
   };
   /** A line of text: its URL images become figures after it, relative images are dropped. */
-  const textLine = (raw, startsItem) => {
+  const addTextLine = (raw, startsItem) => {
     const figures = [];
-    const words = raw.replace(IMAGE, (_, alt, src) => {
+    const withoutImages = raw.replace(IMAGE, (_, alt, src) => {
       if (FULL_URL.test(src)) figures.push({ src, label: alt.trim() || null });
       return "";
     });
-    const line = cleanInline(words);
+    const cleaned = cleanInline(withoutImages);
     if (startsItem) flush();
-    if (line) {
-      if (!hard) builder.text(plainSpoken(line));
+    if (cleaned) {
+      if (!hardWrapped) builder.addText(plainSpoken(cleaned));
       else {
-        open.push(line);
-        if (endsSentence(line)) flush();
+        pending.push(cleaned);
+        if (endsSentence(cleaned)) flush();
       }
     }
     if (figures.length) {
       flush();
-      for (const figure of figures) builder.figure({ ...figure, kind: "image" });
+      for (const figure of figures) builder.addFigure({ ...figure, kind: "image" });
     }
   };
 
@@ -126,7 +154,7 @@ export function parseMarkdown(text, { name = "", key = null } = {}) {
     if (FENCE.test(line)) {
       flush();
       for (i++; i < lines.length && !FENCE.test(lines[i]); i++)
-        if (lines[i].trim()) builder.text(plainSpoken(lines[i].trim()));
+        if (lines[i].trim()) builder.addText(plainSpoken(lines[i].trim()));
       continue;
     }
     if (!line.trim() || HR.test(line)) {
@@ -134,12 +162,12 @@ export function parseMarkdown(text, { name = "", key = null } = {}) {
       quoting = false;
       continue;
     }
-    const heading = line.match(HEADING);
-    if (heading) {
+    const headingMatch = line.match(HEADING);
+    if (headingMatch) {
       flush();
-      const words = cleanInline(heading[2].replace(IMAGE, ""));
-      const index = builder.heading(plainSpoken(words), heading[1].length);
-      if (index !== null) headings.push([heading[1].length, words]);
+      const words = cleanInline(headingMatch[2].replace(IMAGE, ""));
+      const blockIndex = builder.addHeading(plainSpoken(words), headingMatch[1].length);
+      if (blockIndex !== null) headings.push([headingMatch[1].length, words]);
       continue;
     }
     if (FOOTNOTE_DEF.test(line)) {
@@ -149,27 +177,24 @@ export function parseMarkdown(text, { name = "", key = null } = {}) {
     }
     if (TABLE_ROW.test(line) && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1])) {
       flush();
-      const rows = [cells(line)];
-      for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) rows.push(cells(lines[i]));
-      i--;
-      builder.figure({ kind: "table", table: rows, label: null });
+      const rows = [cellsOf(line)];
+      for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) rows.push(cellsOf(lines[i]));
+      i--; // the for adds 1
+      builder.addFigure({ kind: "table", table: rows, label: null });
       continue;
     }
     const isQuote = QUOTE.test(line);
     if (isQuote !== quoting) flush();
     quoting = isQuote;
     const body = isQuote ? line.replace(QUOTE, "") : line;
-    const item = LIST_ITEM.test(body);
-    textLine(item ? body.replace(LIST_ITEM, "") : body, item);
+    const isItem = LIST_ITEM.test(body);
+    addTextLine(isItem ? body.replace(LIST_ITEM, "") : body, isItem);
   }
   flush();
 
-  let title = meta.title ?? null;
-  if (!title && headings.length && headings[0][0] === 1 && headings.filter(([l]) => l === 1).length === 1)
-    title = headings[0][1];
-  return builder.book({
+  return builder.build({
     key,
-    title: title || baseName(name),
+    title: titleOf(meta, headings) || baseName(name),
     author: meta.author ?? null,
     format: "markdown",
   });

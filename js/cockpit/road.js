@@ -10,15 +10,16 @@
 // next. The road's lateral offset at depth z is the double integral of the curvature ahead of the
 // player, so a curve shows first far away; the tilt uses only the curvature where the player is,
 // so it is exactly zero on a straight.
+import { ladderCell } from "./pixel.js";
 
-export const SPEED = 0.22; // depth units per tick
+export const SPEED = 0.22; // z units per tick
 export const ROAD_HALF_WIDTH = 110;
 const COURSE = [0, 0, 1, 1, 0, 0, -1, -1, 0, 1, 0, 0, -1, 0];
-const SEGMENT = 26; // depth units per segment (about 4 s)
-const Z_MAX = 64,
-  DZ = 0.25;
-const BUILDINGS = 28,
-  BUILDING_GAP = 1.1;
+const SEGMENT = 26; // z units per segment (about 4 s)
+const Z_MAX = 64, // how far ahead the road is worked out, in z units
+  DZ = 0.25; // the step of that table
+const BUILDINGS = 28, // how many stand along the road at once
+  BUILDING_GAP = 1.1; // the depth from one to the next
 
 /** The curvature of the course at a travelled depth: it eases into the next segment in the last
  * 30% of each segment. */
@@ -27,41 +28,45 @@ export function curvatureAt(depth) {
     within = depth / SEGMENT - index,
     here = COURSE[index % COURSE.length],
     next = COURSE[(index + 1) % COURSE.length];
-  const t = Math.max(0, Math.min(1, (within - 0.7) / 0.3)),
-    eased = t * t * (3 - 2 * t);
+  const progress = Math.max(0, Math.min(1, (within - 0.7) / 0.3)),
+    eased = progress * progress * (3 - 2 * progress);
   return here + (next - here) * eased;
 }
 
 export class Road {
-  /** `glass`: the see-through part of the cockpit picture, in world pixels. `buildings`: the
-   * building sprites as [{img, meta}] (ladders of sizes). */
-  constructor(glass, buildings) {
+  /** `glass`: the see-through part of the cockpit picture, in world pixels. `buildingSprites`:
+   * [{img, meta}], each a ladder of sizes (ladderCell in pixel.js). */
+  constructor(glass, buildingSprites) {
     this.centerX = glass.x + glass.w / 2;
     this.horizonY = glass.y + Math.round(glass.h * 0.36);
     this.G = 56; // the camera's height above the ground
-    this.sprites = buildings;
+    this.sprites = buildingSprites;
     this.travel = 0;
-    this.tilt = 0; // the cockpit's lean, following the curvature where it is
+    this.tilt = 0; // the cockpit's lean: the curvature where it is, -1 to 1, followed with a lag
     this.swayX = 0; // Elena's sideways sway, in pixels
     this.swayV = 0;
-    this.offsets = new Float32Array(Math.ceil((Z_MAX - 1) / DZ) + 2); // lateral offset at each depth
+    // the road's lateral offset at each depth of the table
+    this.offsets = new Float32Array(Math.ceil((Z_MAX - 1) / DZ) + 2);
+    // each building: side (-1 left, 1 right), d (its depth z), v (which sprite), off (how far
+    // it stands back from the road's edge: 40 and this, so 40 to 79, at z = 1)
     this.buildings = Array.from({ length: BUILDINGS }, (_, k) => ({
       side: k % 2 ? 1 : -1,
       d: 1.2 + k * BUILDING_GAP,
-      v: k % Math.max(1, buildings.length),
+      v: k % Math.max(1, buildingSprites.length),
       off: (k * 37) % 40,
     }));
     this.buildTable();
   }
 
+  /** Fill `offsets`: the road's lateral offset at each depth ahead, the curvature summed twice. */
   buildTable() {
-    let x = 0,
-      v = 0;
+    let offset = 0,
+      slope = 0;
     for (let i = 0; i < this.offsets.length; i++) {
-      this.offsets[i] = x;
+      this.offsets[i] = offset;
       const z = 1 + i * DZ;
-      v += 2.8 * curvatureAt(this.travel + z) * DZ;
-      x += v * DZ;
+      slope += 2.8 * curvatureAt(this.travel + z) * DZ;
+      offset += slope * DZ;
     }
   }
 
@@ -71,7 +76,8 @@ export class Road {
     this.travel += step;
     this.buildTable();
     const curve = curvatureAt(this.travel + 1); // the curvature where the cockpit is
-    this.tilt += (curve * Math.min(1, factor) - this.tilt) * 0.15; // standing still, it does not tilt
+    // standing still, it does not tilt
+    this.tilt += (curve * Math.min(1, factor) - this.tilt) * 0.15;
     for (const building of this.buildings) {
       building.d -= step;
       if (building.d < 0.9) {
@@ -87,10 +93,13 @@ export class Road {
 
   /** The screen x of the road's center at depth z. */
   roadX(z) {
-    const i = Math.max(0, Math.min(this.offsets.length - 2, (z - 1) / DZ)),
-      k = Math.floor(i),
-      w = i - k;
-    return this.centerX + (this.offsets[k] * (1 - w) + this.offsets[k + 1] * w) / Math.max(1, z);
+    const place = Math.max(0, Math.min(this.offsets.length - 2, (z - 1) / DZ)),
+      below = Math.floor(place),
+      share = place - below;
+    return (
+      this.centerX +
+      (this.offsets[below] * (1 - share) + this.offsets[below + 1] * share) / Math.max(1, z)
+    );
   }
   /** A point on the ground, X to the side of the road's center at depth z. */
   project(X, z) {
@@ -102,55 +111,52 @@ export class Road {
   }
 
   /** The road, row by row: alternating bands rush toward the glass. */
-  drawGround(m) {
+  drawGround(ctx) {
     for (let y = this.horizonY + 1; y < 240; y++) {
       const z = this.G / (y - this.horizonY),
-        cx = this.roadX(z),
-        hw = ROAD_HALF_WIDTH / z,
+        center = this.roadX(z),
+        halfWidth = ROAD_HALF_WIDTH / z,
         band = Math.floor((z + this.travel) * 1.2) % 2;
-      m.fillStyle = band ? "#c4c4ca" : "#b8b8c0"; // light gray beside the road (ED D-138)
-      m.fillRect(0, y, 426, 1); // sidewalk
-      m.fillStyle = band ? "#5a5560" : "#524d58";
-      m.fillRect(Math.round(cx - hw), y, Math.round(hw * 2), 1); // asphalt
+      ctx.fillStyle = band ? "#c4c4ca" : "#b8b8c0"; // light gray beside the road (ED D-138)
+      ctx.fillRect(0, y, 426, 1); // sidewalk
+      ctx.fillStyle = band ? "#5a5560" : "#524d58";
+      ctx.fillRect(Math.round(center - halfWidth), y, Math.round(halfWidth * 2), 1); // asphalt
       const rumble = Math.max(1, Math.round(10 / z));
-      m.fillStyle = band ? "#e8e4ee" : "#c33142"; // rumble strips
-      m.fillRect(Math.round(cx - hw - rumble), y, rumble, 1);
-      m.fillRect(Math.round(cx + hw), y, rumble, 1);
+      ctx.fillStyle = band ? "#e8e4ee" : "#c33142"; // rumble strips
+      ctx.fillRect(Math.round(center - halfWidth - rumble), y, rumble, 1);
+      ctx.fillRect(Math.round(center + halfWidth), y, rumble, 1);
       if (band) {
-        m.fillStyle = "#f4f1ff"; // center line
-        m.fillRect(Math.round(cx - Math.max(1, 3 / z)), y, Math.max(1, Math.round(6 / z)), 1);
+        ctx.fillStyle = "#f4f1ff"; // center line
+        ctx.fillRect(Math.round(center - Math.max(1, 3 / z)), y, Math.max(1, Math.round(6 / z)), 1);
       }
     }
   }
 
   /** The buildings on both sides, the farthest first. */
-  drawBuildings(m) {
+  drawBuildings(ctx) {
     if (!this.sprites.length) return;
-    const list = this.buildings.filter((b) => b.d > 0.9).sort((a, b) => b.d - a.d);
-    for (const b of list) {
-      const sprite = this.sprites[b.v],
-        cell = ladderCell(sprite.meta, (sprite.meta.H * 1.6) / b.d);
+    const list = this.buildings
+      .filter((building) => building.d > 0.9)
+      .sort((one, other) => other.d - one.d);
+    for (const building of list) {
+      const sprite = this.sprites[building.v],
+        cell = ladderCell(sprite.meta, (sprite.meta.H * 1.6) / building.d);
       if (cell.h < 6) continue;
-      const x = this.roadX(b.d) + (b.side * (ROAD_HALF_WIDTH + 40 + b.off)) / b.d,
-        footY = this.horizonY + this.G / b.d;
-      m.drawImage(
+      const left =
+          this.roadX(building.d) +
+          (building.side * (ROAD_HALF_WIDTH + 40 + building.off)) / building.d,
+        footY = this.horizonY + this.G / building.d;
+      ctx.drawImage(
         sprite.img,
         cell.x,
         sprite.meta.H - cell.h,
         cell.w,
         cell.h,
-        Math.round(b.side < 0 ? x - cell.w : x),
+        Math.round(building.side < 0 ? left - cell.w : left),
         Math.round(footY - cell.h),
         cell.w,
         cell.h,
       );
     }
   }
-}
-
-/** The cell of a sprite ladder (one picture in several sizes) whose height is nearest to `h`. */
-export function ladderCell(meta, h) {
-  let best = meta.sizes[0];
-  for (const size of meta.sizes) if (Math.abs(size.h - h) < Math.abs(best.h - h)) best = size;
-  return best;
 }
