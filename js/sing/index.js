@@ -81,7 +81,7 @@ export const voiceMissing = () => bank.isMissing();
 export const running = () => !!conductor;
 
 /** Start the song (once): load what it is made of and the sounds, and start the clock. `settings`
- * are the reader's ({ speed, music, voice }). Rejects when a file of the Day Life score cannot be
+ * are the reader's ({ speed, music, voice, melody }). Rejects when a file of the Day Life score cannot be
  * fetched (song.js). Without the voice bank or the instruments the song still starts (D-87). */
 export function start(settings) {
   if (conductor) return Promise.resolve();
@@ -96,6 +96,7 @@ export function start(settings) {
       conductor = create(context, context.destination, song, {
         speed: settings.speed,
         voice: settings.voice ?? 1,
+        melody: settings.melody,
         ...bandLevels(musicSetting, quiet),
       });
       conductor.start();
@@ -207,6 +208,14 @@ export function setVoice(level) {
   if (conductor) conductor.setLevels({ voice: level });
 }
 
+/** The song's mode (「歌のモード」, ED D-157; SPEC_dopa §6.12): "fragments" (the voice's pitches
+ * from the melody fragments over the chords) or "score" (from the score's notes: the highest that
+ * the voice sings naturally, and the chord's root where the score gives none). It holds from the next sentence that starts. Before the song runs
+ * it does nothing: start() takes the mode from the settings. */
+export function setMelody(mode) {
+  if (conductor) conductor.setMelody(mode);
+}
+
 /** The owner moved 「速さ」: the tempo follows at the next bar line (D-23). */
 export function setSpeed(speed) {
   if (conductor) conductor.setSpeed(speed);
@@ -263,10 +272,12 @@ function showPerf() {
  * start(). */
 export const secondsToBarLine = (bars) => conductor.barLine(bars) - context.currentTime;
 
-/** What the song is doing, for checks: { running, held, quiet, state }, `state` being the
- * AudioContext's ("running", "suspended") or null before there is one. */
+/** What the song is doing, for checks: { running, held, quiet, state, melody }, `state` being the
+ * AudioContext's ("running", "suspended") or null before there is one, and `melody` the mode the
+ * next sentence will be planned in (null before the song runs). */
 export const condition = () => ({
   running: !!conductor,
+  melody: conductor ? conductor.melody() : null,
   held,
   quiet,
   state: context ? context.state : null,

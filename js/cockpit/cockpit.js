@@ -7,7 +7,7 @@ import * as clock from "./clock.js";
 import { Bomb } from "./bomb.js";
 import { Battle } from "./battle.js";
 import { Caption } from "./caption.js";
-import { heardAt, judge, openAt } from "./fire.js";
+import { heardAt, judge, openAt, shoutFor } from "./fire.js";
 import { level, levelStart as levelStartOf } from "./levels.js";
 import { Monitor } from "./monitor.js";
 import { canvas, ctx2d, ditheredGradient, drawOutlined, loadImage, textSprite } from "./pixel.js";
@@ -160,10 +160,12 @@ function build(sprites) {
   for (const name of [...LAYERS].reverse())
     frame.prepend(frame.querySelector(`canvas[data-layer="${name}"]`));
   frame.addEventListener("pointerdown", (event) => {
-    if (event.target.closest("button, .list, .card-skip, #gear")) return;
+    if (event.target.closest("button, .list, .card-skip, #gear, #controls")) return;
     options.onStageTap && options.onStageTap(event);
   });
   addEventListener("resize", fit);
+  // a tablet's browser shows and hides its bars without a resize of the window
+  globalThis.visualViewport?.addEventListener("resize", fit);
   fit();
 
   const glass = glassOf(sprites.cockpit),
@@ -227,12 +229,14 @@ function placeHtml() {
   lay("list", main.x + 8, main.y + 8, main.w - 16, main.h - 16, TEXT);
 }
 
-/** Fit the frame to the browser's window, keeping 426 : 240. */
+/** Fit the frame to the browser's window, keeping 426 : 240 (ED D-162: one frame, scaled as a
+ * whole). `--px`, the size of one text-layer pixel, is written on the page's root: everything in
+ * the frame is measured in it, and the drawers and boxes outside it too. */
 function fit() {
   const scale = Math.min(innerWidth / WORLD.w, innerHeight / WORLD.h);
   frame.style.width = Math.floor(WORLD.w * scale) + "px";
   frame.style.height = Math.floor(WORLD.h * scale) + "px";
-  frame.style.setProperty("--px", `${scale / 2}px`); // one text-layer pixel, for the HTML
+  document.documentElement.style.setProperty("--px", `${scale / 2}px`);
 }
 
 /** At most 2 large flashes a second, across everything (ED-10, SC-W08). */
@@ -437,8 +441,8 @@ export function press(eventMs) {
     makeRoom();
     battle.send(target, tickNow, 8);
   }
-  const label = (windows.find((one) => one.id === id) || {}).label || "";
-  battle.say(`${label}ミサイル！`, tickNow); // ST-05
+  const shot = windows.find((one) => one.id === id) || {};
+  battle.say(shoutFor(shot.label || "", shot.lang), tickNow); // ST-05
   battle.shoot(id, tickNow, countOne);
   if (scene.bossBlock) battle.bossHit(tickNow, countOne);
 }

@@ -1,10 +1,11 @@
 // What the site remembers in the user's own browser (SPEC_dopa v3 §5.4; ED D-76, D-88, D-102,
-// D-105; base D-29, D-40): settings, the place in each book, the one explosion count, and the boss
+// D-105, D-157; base D-29, D-40): settings, the place in each book, the one explosion count, and the boss
 // carried to the next chapter. One localStorage key; a browser that refuses storage still reads,
 // it only forgets.
 
 const KEY = "ddr.v1";
-const DEFAULTS = { speed: 1.0, voice: 1.0, music: 0.35, sfx: 0.8 };
+// melody: the song's mode, "fragments" or "score" (SPEC_dopa v3.16 §6.12)
+const DEFAULTS = { speed: 1.0, voice: 1.0, music: 0.35, sfx: 0.8, melody: "fragments" };
 
 // what is kept, read once: { settings, positions, count, lastBook }; lastBook is written and
 // nothing reads it
@@ -26,6 +27,8 @@ function load() {
     count: (saved && Number.isFinite(saved.count) && saved.count) || 0,
     lastBook: (saved && saved.lastBook) || null,
   };
+  // a mode that is neither of the two (an older or a damaged entry) is the first
+  if (state.settings.melody !== "score") state.settings.melody = "fragments";
   return state;
 }
 

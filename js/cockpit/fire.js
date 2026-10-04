@@ -54,3 +54,8 @@ export function heardAt(stamp, eventMs, context) {
  * (for the white flash, ST-28). */
 export const openAt = (windows, heard, alreadyHit = new Set()) =>
   windows.filter((win) => !alreadyHit.has(win.id) && heard >= win.from && heard <= win.to);
+
+/** What M.E.O.W shouts when a target is shot (ST-05): 「{名詞}ミサイル！」, and for a target of an
+ * English sentence (`lang` "en") 「{noun} MISSILE!」 (D-98). */
+export const shoutFor = (label, lang) =>
+  lang === "en" ? `${label} MISSILE!` : `${label}ミサイル！`;

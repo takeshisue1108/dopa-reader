@@ -9,7 +9,7 @@ import * as instruments from "./instruments.js";
 import { kindAt } from "./melody.js";
 import { SLOTS_PER_BAR } from "./bars.js";
 import { planBars, positionAfter, withSlots } from "./plan.js";
-import { notesBySlot } from "./score.js";
+import { notesBySlot, singablePitches } from "./score.js";
 import { sentenceSlots, slotLengths } from "./tempo.js";
 
 export const SLOT = 0.15; // seconds per slot at 200 BPM and the speed 1.0 (D-139)
@@ -161,7 +161,9 @@ export function stopSources(sources, ctx, after = 0.02) {
 // score, for checking one alone); mute (the voice is silent: for checking the accompaniment
 // alone); record (keep each note played in `played`, for the checks); tail, hold (as in
 // singBars); kind (a fixed kind for every bar, for tests); startAt { progression, bar }
-// (0-based); random (the chance that picks a bar's fragment; Math.random when not given).
+// (0-based); random (the chance that picks a bar's fragment; Math.random when not given); melody
+// (the song's mode, SPEC_dopa §6.12: "fragments", or "score" for the voice to take its pitches
+// from the score's notes; setMelody changes it).
 export function create(ctx, out, song, options = {}) {
   const { progressions, fragments } = song;
   const settings = {
@@ -174,6 +176,7 @@ export function create(ctx, out, song, options = {}) {
     hold: true,
     kind: null,
     random: Math.random,
+    melody: "fragments",
     ...options,
   };
   const progressionsWithSlots = withSlots(progressions);
@@ -182,6 +185,12 @@ export function create(ctx, out, song, options = {}) {
   const totalSlots = progressionsWithSlots[0].slots; // the song is one progression: the score
   const lengths = slotLengths(song.tempo); // the length of each slot at the speed 1.0
   const bySlot = song.notes ? notesBySlot(song.notes) : [];
+  // For the mode "score": the pitch the voice takes in each slot of the score, the highest note
+  // sounding there within the bank's range (null where there is none: the chord's root is sung
+  // then, plan.js). Without a score or a bank the table is empty, and every slot is a root.
+  const voiceRange = bank.info();
+  const scorePitches =
+    song.notes && voiceRange ? singablePitches(song.notes, voiceRange.lo, voiceRange.hi) : [];
   const voiceBus = ctx.createGain(),
     bandBus = ctx.createGain();
   const partBus = {};
@@ -232,7 +241,8 @@ export function create(ctx, out, song, options = {}) {
   const lengthAt = (s) => lengths[((s % totalSlots) + totalSlots) % totalSlots] / settings.speed;
 
   function planSentence(sentence) {
-    // a fragment for each bar, by the form at its place (D-25), and its pitches (plan.js)
+    // a fragment for each bar, by the form at its place (D-25), and its pitches (plan.js): the
+    // fragment's over the chords, or in the mode "score" those of the score's notes
     const planned = planBars(
       progressionsWithSlots,
       fragments,
@@ -242,6 +252,7 @@ export function create(ctx, out, song, options = {}) {
         kind: settings.kind,
         random: settings.random,
         previous: lastFragment,
+        scorePitches: settings.melody === "score" ? scorePitches : null,
       },
     );
     Object.assign(sentence, {
@@ -465,6 +476,12 @@ export function create(ctx, out, song, options = {}) {
         voiceBus.gain.value = settings.mute ? 0 : voice;
       }
     },
+    // The song's mode: "score", or anything else for "fragments". A sentence is planned at its
+    // bar line, so the mode holds from the next sentence that starts.
+    setMelody(mode) {
+      settings.melody = mode === "score" ? "score" : "fragments";
+    },
+    melody: () => settings.melody,
     // Change options given to create(). Nothing in the site calls this.
     setOptions(changes) {
       Object.assign(settings, changes);

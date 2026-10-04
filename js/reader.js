@@ -79,12 +79,12 @@ export function init(opts) {
   requestAnimationFrame(lightLoop);
 }
 
-const ENGLISH_CHARS_PER_SLOT = 4; // an English sentence without a voice (ED ST-34)
 // a sentence that could not be analyzed: 8 slots for 5 characters (SD-W09)
 const UNSCORED_CHARS_PER_SLOT = 5 / 8;
 
-/** A score without a voice and without targets: the text's characters go over silent slots
- * (「ッ」) at the song's pace, `charsPerSlot` characters to a slot. */
+/** A score without a voice and without targets, for a sentence that could not be analyzed: the
+ * text's characters go over silent slots (「ッ」) at the song's pace, `charsPerSlot` characters to
+ * a slot. */
 function silentScore(text, charsPerSlot) {
   const morae = [],
     slots = Math.ceil(text.length / charsPerSlot);
@@ -98,15 +98,11 @@ function silentScore(text, charsPerSlot) {
   return { phrases: [{ pause: true, morae }], targets: [] };
 }
 
-/** The score of a sentence for the song. A text with Latin letters and no kana or kanji is not
- * voiced yet (ED ST-34): it gets a silent score, 4 characters to a slot. Every other text goes to
- * the analyzer. When the analyzer cannot answer (its dictionary did not load), reading goes on
- * without a voice (D-87, D-150): a silent score, 8 slots for 5 characters, with the notice
- * 「歌の素材を読み込めませんでした」 once for the book. */
+/** The score of a sentence for the song, from the analyzer; an English sentence too, which the
+ * analyzer turns into katakana (ED D-160, ST-34). When the analyzer cannot answer (its
+ * dictionary did not load), reading goes on without a voice (D-87, D-150): a silent score, 8
+ * slots for 5 characters, with the notice 「歌の素材を読み込めませんでした」 once for the book. */
 async function sungScoreOf(text) {
-  // no kana (U+3040 to U+30FF) and no kanji (U+3400 to U+9FFF), and a Latin letter
-  if (!/[぀-ヿ㐀-鿿]/.test(text) && /[A-Za-z]/.test(text))
-    return silentScore(text, ENGLISH_CHARS_PER_SLOT);
   try {
     return await analyzer.analyze(text);
   } catch (error) {
@@ -362,7 +358,8 @@ async function prepare(place) {
 }
 
 /** The targets of a block (§5.6), with ids, their sentence, their speech span and their display
- * span and text (the shout and the sign use the display text, §5.6 step 3). Every sentence of the
+ * span and text (the shout and the sign use the display text, §5.6 step 3), and `lang: "en"` for
+ * a target of an English sentence. Every sentence of the
  * block is analyzed for this before its first sentence starts; the analyzer keeps its answers
  * (lang/client.js), so making the same sentence ready for the song asks nothing twice. The targets
  * of 8 blocks are kept; the block asked for first goes first. */
@@ -386,6 +383,7 @@ function targetsOf(blockIndex) {
             end: target.end,
             display,
             label: sentence.display.slice(display.start, display.end) || target.text,
+            ...(target.lang && { lang: target.lang }), // "en": the shout is in English (D-98)
           };
         });
       }),
@@ -655,6 +653,7 @@ function hitWindows() {
         ...timed,
         label: target.label,
         display: entry === current ? target.display : null,
+        ...(target.lang && { lang: target.lang }),
       });
     }
   }

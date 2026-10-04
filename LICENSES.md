@@ -18,6 +18,7 @@
 ## ライブラリとフォント
 - kuromoji.js — Apache License 2.0。辞書は IPADIC（NAIST の利用条件に従います。vendor/kuromoji/ に原文）。
 - pdf.js — Apache License 2.0。
+- compromise（Spencer Kelly、英語の品詞を見分けるために使用）— MIT License（vendor/compromise/LICENSE）。
 - CMUdict（Carnegie Mellon University の発音辞書、Copyright (C) 1993-2015 Carnegie Mellon University）— BSD 形式のライセンス。英単語のカタカナ読みの表（data/lang/en_kana.json）は、この発音から規則で作りました。収める語は SCOWL（Copyright 2000-2018 Kevin Atkinson、自由な利用を認める許諾）のよく使う語の段階で選んでいます。
 - DotGothic16 — SIL Open Font License 1.1（vendor/fonts/OFL_DotGothic16.txt）。
 - 美咲フォント — 作者の定める自由な利用条件（vendor/fonts/LICENSE_misaki.txt）。

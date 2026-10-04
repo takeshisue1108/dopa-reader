@@ -11,21 +11,24 @@
 <!-- The loading words (ED D-154): written in the page with their style, so that they show before
      any other file arrives; main.js takes them away when the title screen comes. -->
 <div id="loading" role="status" style="position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:#000;color:#fff;font:16px system-ui,sans-serif">ローディング中学校</div>
-<!-- The floating controls (A-15): they fade after 3 s of rest. -->
-<div id="controls" hidden>
-  <div class="left">
-    <button id="play">▶ 再生</button>
-    <button id="open-contents">目次</button>
-    <button id="open-jump"></button>
-  </div>
-  <div class="right">
-    <button id="open-list">本をえらぶ</button>
-    <button id="open-settings">設定</button>
-    <span id="chars" class="keep"></span>
-  </div>
-</div>
-<!-- The stage: five pixel layers (made by cockpit.js) and the HTML laid over them (SD-W13). -->
+<!-- The stage: five pixel layers (made by cockpit.js) and the HTML laid over them (SD-W13). It is
+     one frame of 852×480 text pixels, scaled as a whole to the window (ED D-162): what is inside
+     is measured in --px, one text pixel. -->
 <div id="stage">
+  <!-- The floating controls (A-15, A-44), along the frame's upper edge: with a mouse they fade
+       after 3 s of rest; on a touch screen they stay. -->
+  <div id="controls" hidden>
+    <div class="left">
+      <button id="play">▶ 再生</button>
+      <button id="open-contents">目次</button>
+      <button id="open-jump"></button>
+    </div>
+    <div class="right">
+      <button id="open-list">本をえらぶ</button>
+      <button id="open-settings">設定</button>
+      <span id="chars" class="keep"></span>
+    </div>
+  </div>
   <div id="title" hidden>
     <h1 class="rainbow">ドパドパ読書リーダー</h1>
     <p class="rainbow doujin">同人作品</p>
@@ -39,9 +42,9 @@
   <!-- The charging display while the song loads (ED D-153, A-41; SPEC §6.2a). -->
   <div id="charge" class="charge" hidden></div>
   <button id="card-skip" class="card-skip" hidden aria-label="次へ"></button>
+  <div id="notice" role="status" aria-live="polite"></div>
 </div>
 
-<div id="notice" role="status" aria-live="polite"></div>
 <div id="live" class="hidden-text" aria-live="polite"></div>
 <div id="announce" class="hidden-text" aria-live="polite"></div>
 
@@ -56,6 +59,10 @@
   <label>歌 <input id="set-voice" type="range" min="0" max="1" step="0.05"></label>
   <label>オケ <input id="set-music" type="range" min="0" max="1" step="0.05"></label>
   <label>効果音 <input id="set-sfx" type="range" min="0" max="1" step="0.05"></label>
+  <fieldset id="set-melody"><legend>歌のモード</legend>
+    <label><input type="radio" name="set-melody" value="fragments"> メロディ断片</label>
+    <label><input type="radio" name="set-melody" value="score"> オケの音</label>
+  </fieldset>
   <p class="credits"></p>
   <button class="close">閉じる</button>
 </dialog>

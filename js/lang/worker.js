@@ -5,7 +5,9 @@
 // importScripts, so the script is fetched and run once.
 //
 // The English katakana table (§5.7, D-116) is loaded with the dictionary. If it cannot be loaded,
-// the reader still sings: every Latin word that is not all capitals is then one ニャン.
+// the reader still sings: every Latin word that is not all capitals is then one ニャン. The
+// English tagger, which finds the target nouns of an English sentence (§5.6 step 6), is loaded at
+// the first English sentence.
 //
 // Messages in:  { id, text }
 // Messages out: { id: 0, loaded, of } as each file of the dictionary arrives (for the charging
@@ -14,7 +16,8 @@
 //               { id, error }.
 // Before the dictionary is loaded, texts wait; if it cannot be loaded, every text gets an error
 // and the reader goes on without a voice (SD-W09).
-import { analyze } from "./analyze.js";
+import { analyze, isEnglishSentence } from "./analyze.js";
+import { termsOf } from "./english.js";
 
 // Paths from this file's own place, so the site works under any folder of any server.
 const KUROMOJI_SCRIPT_URL = new URL("../../vendor/kuromoji/build/kuromoji.js", import.meta.url);
@@ -22,6 +25,8 @@ const KUROMOJI_SCRIPT_URL = new URL("../../vendor/kuromoji/build/kuromoji.js", i
 // server's root is enough, since the dictionary is on the same server.
 const DICTIONARY_PATH = new URL("../../vendor/kuromoji/dict/", import.meta.url).pathname;
 const ENGLISH_KANA_URL = new URL("../../data/lang/en_kana.json", import.meta.url);
+// the English part-of-speech tagger, compromise (§5.6 step 6, SD-W17)
+const ENGLISH_TAGGER_URL = new URL("../../vendor/compromise/compromise-two.mjs", import.meta.url);
 
 // kuromoji fetches its dictionary's 12 files with XMLHttpRequest, and nothing else here does: each
 // request that ends (loaded or failed) is one file more for the charging display. The page counts
@@ -60,6 +65,19 @@ async function loadEnglish() {
   }
 }
 
+// The English tagger is loaded when the first English sentence comes, so that a reader of
+// Japanese books never fetches it. If it cannot be loaded, English sentences have no targets and
+// are sung all the same.
+let taggerLoading = null;
+const loadTagger = () =>
+  (taggerLoading ??= import(ENGLISH_TAGGER_URL).then(
+    (module) => module.default,
+    (error) => {
+      console.warn(`the English tagger did not load: ${error}`);
+      return null;
+    },
+  ));
+
 const englishLoading = loadEnglish();
 const tokenizerLoading = loadTokenizer();
 const loaded = Promise.all([tokenizerLoading, englishLoading]);
@@ -71,8 +89,12 @@ loaded.then(
 self.onmessage = async ({ data: { id, text } }) => {
   try {
     const [tokenizer, englishKana] = await loaded;
+    const tagger = isEnglishSentence(text) ? await loadTagger() : null;
     const started = performance.now();
-    const { phrases, targets } = analyze(text, tokenizer.tokenize(text), { english: englishKana });
+    const { phrases, targets } = analyze(text, tokenizer.tokenize(text), {
+      english: englishKana,
+      englishTerms: tagger ? termsOf(tagger, text) : null,
+    });
     self.postMessage({ id, phrases, targets, ms: performance.now() - started });
   } catch (error) {
     self.postMessage({ id, error: String(error?.message ?? error) });

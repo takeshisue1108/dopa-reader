@@ -53,24 +53,35 @@ button, input { font-family: inherit; }
 .list .message .charge .words { font-size: calc(var(--px) * 16); }
 .list .message .charge .bar { width: calc(var(--px) * 160); height: calc(var(--px) * 8); }
 
-/* the floating controls (A-15, ST-16, ST-17) */
-#controls { position: fixed; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; padding: 0.6vh 1vw; z-index: 30; font-size: max(14px, 2vh);
+/* the floating controls (A-15, A-44, ST-16, ST-17): along the frame's upper edge, measured in the
+   frame's text pixels so that they scale with it (ED D-162) */
+#controls { position: absolute; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; padding: calc(var(--px) * 4) calc(var(--px) * 6); z-index: 30; font-size: calc(var(--px) * 16);
   text-shadow: 1px 1px 0 var(--ink), -1px 1px 0 var(--ink), 1px -1px 0 var(--ink), -1px -1px 0 var(--ink); pointer-events: none; }
 #controls[hidden] { display: none; }
-#controls > div { display: flex; gap: 0.6vw; align-items: center; pointer-events: auto; }
-#controls button { background: var(--ink); color: #fff; border: 1px solid #4a4458; padding: 0.3em 0.7em; cursor: pointer; font-size: inherit; transition: opacity .4s; }
-#controls .keep { color: var(--gold); }
-body.rest #controls:not(:focus-within) button { opacity: 0; }
+#controls > div { display: flex; gap: calc(var(--px) * 4); align-items: center; pointer-events: auto; }
+#controls button { background: var(--ink); color: #fff; border: 1px solid #4a4458; padding: 0.25em 0.6em; cursor: pointer; font-size: inherit; transition: opacity .4s; white-space: nowrap; }
+#controls .keep { color: var(--gold); white-space: nowrap; }
+/* they fade at rest only where a mouse can bring them back; on a touch screen they stay (A-44) */
+@media (hover: hover) { body.rest #controls:not(:focus-within) button { opacity: 0; } }
 
-#notice { position: fixed; left: 50%; bottom: 3vh; transform: translateX(-50%); z-index: 31; font-size: max(14px, 2.2vh); color: var(--gold);
+#notice { position: absolute; left: 50%; bottom: calc(var(--px) * 14); transform: translateX(-50%); z-index: 31; font-size: calc(var(--px) * 16); color: var(--gold); white-space: nowrap;
   text-shadow: 1px 1px 0 var(--ink), -1px 1px 0 var(--ink), 1px -1px 0 var(--ink), -1px -1px 0 var(--ink); pointer-events: none; }
 .hidden-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
-dialog { background: var(--panel); color: #fff; border: 2px solid var(--green); font-size: max(14px, 2.2vh); max-height: 80vh; min-width: min(80vw, 420px); }
+/* the drawers and boxes: letters of 16 text pixels, so that they scale with the frame (D-162) */
+dialog { background: var(--panel); color: #fff; border: 2px solid var(--green); font-size: calc(var(--px) * 16); max-height: 86vh; max-width: 92vw; min-width: min(80vw, calc(var(--px) * 420)); }
+dialog input[type="range"] { width: calc(var(--px) * 200); vertical-align: middle; }
+dialog input[type="number"] { font-size: inherit; width: 6em; }
+dialog button { font-size: inherit; }
 dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
 dialog h2 { margin-top: 0; color: var(--gold); font-size: 1.1em; }
 dialog button { background: var(--ink); color: #fff; border: 1px solid #4a4458; padding: 0.3em 0.8em; cursor: pointer; }
 dialog label { display: block; margin: 0.5em 0; }
+/* the song's mode (ED D-157, A-43): two choices side by side under their name, with no frame */
+dialog fieldset { border: 0; margin: 0.5em 0; padding: 0; }
+dialog fieldset legend { padding: 0; }
+dialog fieldset label { display: inline-block; margin: 0.2em 1em 0.2em 0; cursor: pointer; }
+dialog fieldset input { accent-color: var(--green); }
 dialog ol { padding-left: 1.4em; }
 dialog ol button { background: transparent; border: 0; color: #fff; text-align: left; padding: 0.15em 0; }
 #end-notes { white-space: pre-wrap; font-size: 0.8em; color: #b8b0c8; margin: 0.8em 0; }

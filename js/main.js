@@ -398,6 +398,14 @@ function wireControls() {
     prefs.setSetting("sfx", Number(event.target.value));
     sound.setLevel(Number(event.target.value));
   };
+  // 「歌のモード」 (ED D-157, A-43): the choice holds from the next sentence that starts
+  for (const choice of document.querySelectorAll('input[name="set-melody"]')) {
+    choice.checked = choice.value === saved.melody;
+    choice.onchange = () => {
+      prefs.setSetting("melody", choice.value);
+      sing.setMelody(choice.value);
+    };
+  }
   document.querySelector("#settings .credits").textContent = `${S.creditVoice}　${S.creditMusic}`;
 }
 

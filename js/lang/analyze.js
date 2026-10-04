@@ -4,6 +4,8 @@
 //
 //     { phrases: [{ pause, morae: [{ k, start, end, tails }] }], targets: [{ start, end, text }] }
 //
+// (a target of an English sentence also has `lang: "en"`)
+//
 // `k` is the katakana sung in one slot: one kana, two (キャ), a closed syllable (サン) or the unit
 // ニャン. `tails` is always [] here: it held a ン sung at the end of the slot before the closed
 // syllables of D-118, and stays because the conductor still reads it.
@@ -11,6 +13,10 @@
 // code units), so that `speech.slice(start, end)` is the text. Timing is not made here: the reader
 // takes it from the song (§5.6 step 4). Pure: no browser globals, tested with node. The English
 // katakana table (§5.7) is passed in by the caller, so a test can pass a small one.
+//
+// An English sentence (a Latin letter, no kana and no kanji) is sung in katakana by the same
+// steps (§5.5 step 6; ED D-160): its words run on without a rest at the spaces, and its 「a」 is
+// the article ア.
 import {
   NYAN,
   NYAN_MARK,
@@ -20,6 +26,7 @@ import {
   spreadOverCharacters,
   toKatakana,
 } from "./morae.js";
+import { englishTargets } from "./english.js";
 import { targetsOf } from "./nouns.js";
 import {
   KANJI_NUMERAL,
@@ -35,6 +42,11 @@ const KATAKANA = /[ァ-ヺー]/;
 const HIRAGANA = /[ぁ-ゖ]/;
 const DIGIT_CHARS = /^[0-9０-９,，.．]+$/;
 const HAS_DIGIT = /[0-9０-９]/;
+const KANA_OR_KANJI = /[\u3040-\u30ff\u3400-\u9fff]/; // hiragana, katakana, kanji
+const ARTICLE_A = "ア"; // the word 「a」 of an English sentence (§5.5 step 6)
+
+/** Whether a sentence is English: it has a Latin letter and no kana and no kanji (ED D-160). */
+export const isEnglishSentence = (speech) => /[A-Za-z]/.test(speech) && !KANA_OR_KANJI.test(speech);
 // A word of Latin letters (§5.5 step 2, D-116): letters, with an apostrophe or a hyphen inside.
 const LATIN_WORD = /^[A-Za-z]+(?:['’-][A-Za-z]+)*$/;
 const LATIN_PIECE = /^(?:[A-Za-z]+|['’-])$/;
@@ -99,13 +111,34 @@ function lookUp(english, word) {
 /**
  * How one word of Latin letters is sung (D-116): a word of capitals only by the letters' names;
  * any other word by its reading in the English table `english` (lower-cased, so iPhone is looked
- * up as "iphone"); a word not in the table as one ニャン (NYAN_MARK) for the whole word.
+ * up as "iphone"); a word not in the table as one ニャン (NYAN_MARK) for the whole word. Two kinds
+ * of word that the table does not have whole are read from their parts: a word with hyphens when
+ * every part has a reading (well-known), and a possessive in 's when its word has one (cat's).
  */
 export function readLatin(word, english = null) {
   if (!/[a-z]/.test(word)) {
     return [...word].map((char) => LETTER_NAMES[char] ?? "").join("");
   }
-  return lookUp(english, word.toLowerCase().replaceAll("’", "'")) ?? NYAN_MARK;
+  const lowerCase = word.toLowerCase().replaceAll("’", "'");
+  const known = lookUp(english, lowerCase);
+  if (known !== undefined) return known;
+  if (word.includes("-")) {
+    const parts = word.split("-").map((part) => readLatin(part, english));
+    return parts.includes(NYAN_MARK) ? NYAN_MARK : parts.join("");
+  }
+  if (lowerCase.endsWith("'s")) {
+    const owner = readLatin(word.slice(0, -2), english);
+    return owner === NYAN_MARK ? NYAN_MARK : possessiveOf(owner);
+  }
+  return NYAN_MARK;
+}
+
+/** The katakana of a word with 's after it: a final ト becomes ツ and a final ド becomes ズ
+ * (キャット -> キャッツ, ワールド -> ワールズ); ス after ク, プ, フ and ス; ズ otherwise. */
+function possessiveOf(reading) {
+  if (reading.endsWith("ト")) return reading.slice(0, -1) + "ツ";
+  if (reading.endsWith("ド")) return reading.slice(0, -1) + "ズ";
+  return reading + (/[クプフス]$/.test(reading) ? "ス" : "ズ");
 }
 
 /**
@@ -314,8 +347,10 @@ export function startsPhrase(word, previous) {
   }
 }
 
-/** The phrases of the score (SPEC_sing §5.2) from the words. */
-export function phrasesOf(speech, words) {
+/** The phrases of the score (SPEC_sing §5.2) from the words. `spacesPause` is false for an
+ * English sentence: a space between its words is lit with the word before it and is no pause, so
+ * that the rests fall at the punctuation marks only (§5.5 step 6). */
+export function phrasesOf(speech, words, { spacesPause = true } = {}) {
   const phrases = [];
   let lastMora = null; // across words: a word may start with a long mark that prolongs it
   let previous = null;
@@ -326,7 +361,8 @@ export function phrasesOf(speech, words) {
       // pause, lit with the mora before it
       if (phrases.length) {
         const phrase = phrases[phrases.length - 1];
-        phrase.pause = true;
+        const isSpace = !speech.slice(word.start, word.end).trim();
+        if (spacesPause || !isSpace) phrase.pause = true;
         phrase.morae[phrase.morae.length - 1].end = word.end;
       }
       previous = word;
@@ -381,13 +417,26 @@ function widenToTheEnds(phrases, speech) {
 /**
  * The score and the targets of one sentence. `tokens` are kuromoji's `tokenize(speech)`;
  * `english` is the English katakana table of §5.7 ({ word: katakana }, or a Map), or omitted, in
- * which case every Latin word that is not all capitals is sung ニャン.
+ * which case every Latin word that is not all capitals is sung ニャン. An English sentence
+ * (isEnglishSentence) is sung in katakana with no rest at its spaces, and its 「a」 as ア; its
+ * targets come from `englishTerms`, the words of the English tagger (english.js, termsOf), and
+ * without them it has none.
  *
  *     analyze("これは本です。", tokens).phrases -> コレワ / ホンデス (pause)
  *     analyze("computerを使う", tokens, { english: { computer: "コンピューター" } })
  */
-export function analyze(speech, tokens, { english = null } = {}) {
+export function analyze(speech, tokens, { english = null, englishTerms = null } = {}) {
   const spans = spansOf(speech, tokens);
   const words = wordsOf(speech, tokens, spans, english);
-  return { phrases: phrasesOf(speech, words), targets: targetsOf(speech, tokens, spans) };
+  const inEnglish = isEnglishSentence(speech);
+  if (inEnglish)
+    for (const word of words)
+      if (/^a$/i.test(speech.slice(word.start, word.end))) word.pron = ARTICLE_A;
+  // an English sentence takes its targets from the English tagger's words (§5.6 step 6);
+  // without them it has none, since kuromoji's tokens of Latin letters are never targets
+  const targets =
+    inEnglish && englishTerms
+      ? englishTargets(speech, englishTerms)
+      : targetsOf(speech, tokens, spans);
+  return { phrases: phrasesOf(speech, words, { spacesPause: !inEnglish }), targets };
 }
