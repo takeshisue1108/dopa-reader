@@ -12,7 +12,7 @@
 // `start` and `end` are offsets in the speech string, counted as JavaScript counts them (UTF-16
 // code units), so that `speech.slice(start, end)` is the text. Timing is not made here: the reader
 // takes it from the song (§5.6 step 4). Pure: no browser globals, tested with node. The English
-// katakana table (§5.7) is passed in by the caller, so a test can pass a small one.
+// pronunciations (§5.7) are passed in by the caller, so a test can pass a small table.
 //
 // An English sentence (a Latin letter, no kana and no kanji) is sung in katakana by the same
 // steps (§5.5 step 6; ED D-160): its words run on without a rest at the spaces, and its 「a」 is
@@ -101,50 +101,40 @@ export function spansOf(speech, tokens) {
   return spans;
 }
 
-/** The reading of a lower-case word in the English table, a plain object or a Map; or undefined. */
+/** The katakana of an English word, or undefined. `english` is the site's English
+ * pronunciations (pronounce.js, createEnglish: the katakana is made from the word's IPA), or,
+ * for a test, a small table of katakana readings by lower-case word: a plain object or a Map. */
 function lookUp(english, word) {
   if (!english) return undefined;
-  if (english instanceof Map) return english.get(word);
-  return Object.hasOwn(english, word) ? english[word] : undefined;
+  if (typeof english.kanaOf === "function") return english.kanaOf(word);
+  const lowerCase = word.toLowerCase().replaceAll("’", "'");
+  if (english instanceof Map) return english.get(lowerCase);
+  return Object.hasOwn(english, lowerCase) ? english[lowerCase] : undefined;
 }
 
 /**
  * How one word of Latin letters is sung (D-116): a word of capitals only by the letters' names;
- * any other word by its reading in the English table `english` (lower-cased, so iPhone is looked
- * up as "iphone"); a word not in the table as one ニャン (NYAN_MARK) for the whole word. Two kinds
- * of word that the table does not have whole are read from their parts: a word with hyphens when
- * every part has a reading (well-known), and a possessive in 's when its word has one (cat's).
+ * any other word by its English reading (lookUp: from its IPA; iPhone is looked up as "iphone");
+ * a word that has none as one ニャン (NYAN_MARK) for the whole word. A word with hyphens that has
+ * no reading whole is read part by part when every part has one (well-known).
  */
 export function readLatin(word, english = null) {
   if (!/[a-z]/.test(word)) {
     return [...word].map((char) => LETTER_NAMES[char] ?? "").join("");
   }
-  const lowerCase = word.toLowerCase().replaceAll("’", "'");
-  const known = lookUp(english, lowerCase);
+  const known = lookUp(english, word);
   if (known !== undefined) return known;
   if (word.includes("-")) {
     const parts = word.split("-").map((part) => readLatin(part, english));
     return parts.includes(NYAN_MARK) ? NYAN_MARK : parts.join("");
   }
-  if (lowerCase.endsWith("'s")) {
-    const owner = readLatin(word.slice(0, -2), english);
-    return owner === NYAN_MARK ? NYAN_MARK : possessiveOf(owner);
-  }
   return NYAN_MARK;
-}
-
-/** The katakana of a word with 's after it: a final ト becomes ツ and a final ド becomes ズ
- * (キャット -> キャッツ, ワールド -> ワールズ); ス after ク, プ, フ and ス; ズ otherwise. */
-function possessiveOf(reading) {
-  if (reading.endsWith("ト")) return reading.slice(0, -1) + "ツ";
-  if (reading.endsWith("ド")) return reading.slice(0, -1) + "ズ";
-  return reading + (/[クプフス]$/.test(reading) ? "ス" : "ズ");
 }
 
 /**
  * How a word the dictionary cannot read is sung (§5.5 step 2), in katakana; "" for none. Each
  * 「ニャン」 is written as NYAN_MARK, which morae.js sings as the one mora ニャン. `english` is the
- * English katakana table (§5.7), or null when it is not loaded.
+ * English pronunciations (§5.7), or null when they are not loaded.
  */
 export function readUnknown(surface, english = null) {
   const text = asciiDigits(surface.normalize("NFKC"));
@@ -193,7 +183,7 @@ const isKanjiNumeral = (token) =>
  * number is one word however the dictionary cut it (2 . 5, or 三 百), read by numbers.js; a number
  * and its counter are one word when the pair has a reading of its own (1日 ツイタチ). A word of
  * Latin letters is one word however the dictionary cut it (don ' t). A word whose `pron` gives no
- * morae is a mark. `english` is the English katakana table (§5.7), or null.
+ * morae is a mark. `english` is the English pronunciations (§5.7), or null.
  */
 export function wordsOf(speech, tokens, spans, english = null) {
   const words = [];
@@ -416,11 +406,14 @@ function widenToTheEnds(phrases, speech) {
 
 /**
  * The score and the targets of one sentence. `tokens` are kuromoji's `tokenize(speech)`;
- * `english` is the English katakana table of §5.7 ({ word: katakana }, or a Map), or omitted, in
- * which case every Latin word that is not all capitals is sung ニャン. An English sentence
+ * `english` is the site's English pronunciations (pronounce.js; for a test, a small table
+ * { word: katakana } or a Map), or omitted, in which case every Latin word that is not all
+ * capitals is sung ニャン. An English sentence
  * (isEnglishSentence) is sung in katakana with no rest at its spaces, and its 「a」 as ア; its
  * targets come from `englishTerms`, the words of the English tagger (english.js, termsOf), and
- * without them it has none.
+ * without them it has none. With the site's `english` (pronounce.js) the result also has `ipa`:
+ * [{ start, end, ipa }], the IPA of each word of Latin letters, for the English voice to come
+ * (ED D-167).
  *
  *     analyze("これは本です。", tokens).phrases -> コレワ / ホンデス (pause)
  *     analyze("computerを使う", tokens, { english: { computer: "コンピューター" } })
@@ -429,14 +422,32 @@ export function analyze(speech, tokens, { english = null, englishTerms = null } 
   const spans = spansOf(speech, tokens);
   const words = wordsOf(speech, tokens, spans, english);
   const inEnglish = isEnglishSentence(speech);
-  if (inEnglish)
-    for (const word of words)
-      if (/^a$/i.test(speech.slice(word.start, word.end))) word.pron = ARTICLE_A;
+  const ipa = english && typeof english.ipaOf === "function" ? [] : null;
+  for (const word of words) {
+    const written = speech.slice(word.start, word.end).normalize("NFKC");
+    if (!LATIN_WORD.test(written)) continue;
+    // in an English sentence the tagger's tags choose between two pronunciations (refuse)
+    const tags = inEnglish && englishTerms ? tagsAt(englishTerms, word.start, word.end) : null;
+    if (ipa) {
+      const pronunciation = english.ipaOf(written, tags);
+      if (pronunciation !== undefined)
+        ipa.push({ start: word.start, end: word.end, ipa: pronunciation });
+      if (tags && /[a-z]/.test(written)) word.pron = english.kanaOf(written, tags) ?? word.pron;
+    }
+    if (inEnglish && /^a$/i.test(written)) word.pron = ARTICLE_A;
+  }
   // an English sentence takes its targets from the English tagger's words (§5.6 step 6);
   // without them it has none, since kuromoji's tokens of Latin letters are never targets
   const targets =
     inEnglish && englishTerms
       ? englishTargets(speech, englishTerms)
       : targetsOf(speech, tokens, spans);
-  return { phrases: phrasesOf(speech, words, { spacesPause: !inEnglish }), targets };
+  const phrases = phrasesOf(speech, words, { spacesPause: !inEnglish });
+  return ipa ? { phrases, targets, ipa } : { phrases, targets };
+}
+
+/** The tags of the tagger's word that lies at [start, end) of the text, or null. */
+function tagsAt(englishTerms, start, end) {
+  const term = englishTerms.find((one) => one.start < end && one.end > start);
+  return term ? term.tags : null;
 }

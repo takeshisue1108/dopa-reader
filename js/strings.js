@@ -3,7 +3,7 @@
 // messages: some of the keys here are read by no script.
 
 export const S = {
-  site: "ドパドパ読書リーダー",
+  site: "ドパドパBookリーダー",
   selectBook: "SELECT A BOOK",
   doujin: "同人作品",
   recent: "続きから",

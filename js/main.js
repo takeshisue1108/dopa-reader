@@ -1,4 +1,4 @@
-// The page of ドパドパ読書リーダー (SPEC_dopa v3 §6.1, §6.2, §6.9, §6.10; ED V-05, V-06, ST-16,
+// The page of ドパドパBookリーダー (SPEC_dopa v3 §6.1, §6.2, §6.9, §6.10; ED V-05, V-06, ST-16,
 // ST-17, ST-24 to ST-27, ST-32, ST-36, D-74, D-76, D-97, D-99, D-106). It boots the cockpit, shows
 // the book list, opens a book (a bundled one, a kept upload, or a new file) and wires the controls.
 import * as books from "./books/index.js";
@@ -23,7 +23,12 @@ let bundled = [], // data/books/index.json
  * books, wire the controls and show the title. */
 async function boot() {
   watchOrientation();
+  // the bar of the loading words (D-163): the scripts run, and the cockpit's files are counted
+  loading.count("page", 0, 1);
+  const stopBar = loading.watch(() => pageBar(loading.pagePercent(false)));
+  pageBar(loading.pagePercent(false));
   await cockpit.load();
+  stopBar();
   cockpit.setCount(prefs.count());
   reader.init({
     analyzer: createAnalyzer(),
@@ -41,13 +46,26 @@ async function boot() {
   } catch {
     bundled = [];
   }
+  pageBar(loading.pagePercent(true));
   wireControls();
   showTitle();
-  $("loading")?.remove(); // the loading words of the page itself (D-154)
+  // The loading words (D-154) go when the title's scene has been drawn under them: taken away at
+  // once, they showed for a frame what the canvases still held, the cockpit with Elena from
+  // behind (D-164).
+  await cockpit.afterNextDraw();
+  $("loading")?.remove();
   if (new URLSearchParams(location.search).has("gallery")) showGallery();
   // at every touch and key: phones want the audio made, and woken, inside a gesture (§6.9)
   addEventListener("pointerdown", unlockAudio, { capture: true });
   addEventListener("keydown", unlockAudio, { capture: true });
+}
+
+/** Fill the bar of the loading words to `percent` (0 to 100); nothing once they are gone. */
+function pageBar(percent) {
+  const bar = $("loading-bar");
+  if (!bar) return;
+  $("loading-fill").style.width = `${percent}%`;
+  bar.setAttribute("aria-valuenow", String(Math.round(percent)));
 }
 
 /** At every touch and key: make the song's AudioContext and let it run, and make the effects'

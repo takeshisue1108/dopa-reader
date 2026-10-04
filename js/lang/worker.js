@@ -4,27 +4,36 @@
 // do. kuromoji.js is a plain script that sets `self.kuromoji`; a module worker has no
 // importScripts, so the script is fetched and run once.
 //
-// The English katakana table (§5.7, D-116) is loaded with the dictionary. If it cannot be loaded,
-// the reader still sings: every Latin word that is not all capitals is then one ニャン. The
-// English tagger, which finds the target nouns of an English sentence (§5.6 step 6), is loaded at
-// the first English sentence.
+// What English needs is loaded only when it comes (§5.7; ED D-116, D-160, D-167), so a book
+// without Latin letters fetches none of it: the dictionary of pronunciations in IPA, with the
+// list of words that have two, at the first sentence with a Latin letter; the model that writes
+// a pronunciation from a spelling (g2p.js), at the first word that the dictionary cannot give;
+// the tagger that finds the target nouns of an English sentence (§5.6 step 6), at the first
+// English sentence. Without the dictionary every Latin word that is not all capitals is one
+// ニャン; without the model, only the words the dictionary lacks; without the tagger an English
+// sentence has no targets. The reader sings in every case.
 //
 // Messages in:  { id, text }
 // Messages out: { id: 0, loaded, of } as each file of the dictionary arrives (for the charging
 //               display, §6.2a); { id: 0, ready: true } once the dictionary is loaded, or
-//               { id: 0, error } when it cannot be; { id, phrases, targets, ms } for each text, or
+//               { id: 0, error } when it cannot be; { id, phrases, targets, ipa, ms } for each
+//               text (ipa: the IPA of its words of Latin letters, when it has any), or
 //               { id, error }.
 // Before the dictionary is loaded, texts wait; if it cannot be loaded, every text gets an error
 // and the reader goes on without a voice (SD-W09).
 import { analyze, isEnglishSentence } from "./analyze.js";
 import { termsOf } from "./english.js";
+import { createG2p } from "./g2p.js";
+import { createEnglish } from "./pronounce.js";
 
 // Paths from this file's own place, so the site works under any folder of any server.
 const KUROMOJI_SCRIPT_URL = new URL("../../vendor/kuromoji/build/kuromoji.js", import.meta.url);
 // kuromoji joins the dictionary's path with `path.join`, which spoils "http://"; the path from the
 // server's root is enough, since the dictionary is on the same server.
 const DICTIONARY_PATH = new URL("../../vendor/kuromoji/dict/", import.meta.url).pathname;
-const ENGLISH_KANA_URL = new URL("../../data/lang/en_kana.json", import.meta.url);
+const ENGLISH_IPA_URL = new URL("../../data/lang/en_ipa.json", import.meta.url);
+const ENGLISH_HOMOGRAPHS_URL = new URL("../../data/lang/en_homographs.json", import.meta.url);
+const ENGLISH_MODEL_URL = new URL("../../data/lang/en_g2p.bin", import.meta.url);
 // the English part-of-speech tagger, compromise (§5.6 step 6, SD-W17)
 const ENGLISH_TAGGER_URL = new URL("../../vendor/compromise/compromise-two.mjs", import.meta.url);
 
@@ -54,33 +63,57 @@ async function loadTokenizer() {
   );
 }
 
-async function loadEnglish() {
-  try {
-    const response = await fetch(ENGLISH_KANA_URL);
-    if (!response.ok) throw new Error(`${response.status}`);
-    return await response.json();
-  } catch (error) {
-    console.warn(`en_kana.json did not load: ${error}`);
-    return null;
+const fetched = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url.pathname}: ${response.status}`);
+  return response;
+};
+/** A loader that fetches once, at its first call, and gives null (with a line in the console)
+ * when what it fetches cannot be had. */
+const once = (what, load) => {
+  let loading = null;
+  return () =>
+    (loading ??= load().catch((error) => {
+      console.warn(`${what} did not load: ${error}`);
+      return null;
+    }));
+};
+
+// The English pronunciations (pronounce.js): the dictionary in IPA and the words with two.
+const loadEnglish = once("the English dictionary", async () => {
+  const [table, homographs] = await Promise.all([
+    fetched(ENGLISH_IPA_URL).then((response) => response.json()),
+    fetched(ENGLISH_HOMOGRAPHS_URL).then((response) => response.json()),
+  ]);
+  return createEnglish({ table, homographs });
+});
+// The model for the words outside the dictionary (g2p.js): its weights, 32-bit floats.
+const loadModel = once("the English spelling model", async () =>
+  createG2p(new Float32Array(await (await fetched(ENGLISH_MODEL_URL)).arrayBuffer())),
+);
+
+/** The English pronunciations ready for a text: loaded, and with the model's answer for each of
+ * its words that the dictionary cannot give. null when the text has no Latin letter, or when
+ * the dictionary cannot be loaded. */
+async function englishFor(text) {
+  if (!/[A-Za-zＡ-Ｚａ-ｚ]/.test(text)) return null;
+  const english = await loadEnglish();
+  if (!english) return null;
+  const unknown = english.unknownWords(text);
+  if (unknown.length) {
+    const predict = await loadModel();
+    if (predict) for (const word of unknown) english.learn(word, predict(word));
   }
+  return english;
 }
 
-// The English tagger is loaded when the first English sentence comes, so that a reader of
-// Japanese books never fetches it. If it cannot be loaded, English sentences have no targets and
-// are sung all the same.
-let taggerLoading = null;
-const loadTagger = () =>
-  (taggerLoading ??= import(ENGLISH_TAGGER_URL).then(
-    (module) => module.default,
-    (error) => {
-      console.warn(`the English tagger did not load: ${error}`);
-      return null;
-    },
-  ));
+// The tagger of English sentences (compromise).
+const loadTagger = once(
+  "the English tagger",
+  async () => (await import(ENGLISH_TAGGER_URL)).default,
+);
 
-const englishLoading = loadEnglish();
-const tokenizerLoading = loadTokenizer();
-const loaded = Promise.all([tokenizerLoading, englishLoading]);
+const loaded = loadTokenizer();
 loaded.then(
   () => self.postMessage({ id: 0, ready: true }),
   (error) => self.postMessage({ id: 0, error: `the dictionary did not load: ${error}` }),
@@ -88,14 +121,15 @@ loaded.then(
 
 self.onmessage = async ({ data: { id, text } }) => {
   try {
-    const [tokenizer, englishKana] = await loaded;
+    const tokenizer = await loaded;
+    const english = await englishFor(text);
     const tagger = isEnglishSentence(text) ? await loadTagger() : null;
     const started = performance.now();
-    const { phrases, targets } = analyze(text, tokenizer.tokenize(text), {
-      english: englishKana,
+    const { phrases, targets, ipa } = analyze(text, tokenizer.tokenize(text), {
+      english,
       englishTerms: tagger ? termsOf(tagger, text) : null,
     });
-    self.postMessage({ id, phrases, targets, ms: performance.now() - started });
+    self.postMessage({ id, phrases, targets, ipa, ms: performance.now() - started });
   } catch (error) {
     self.postMessage({ id, error: String(error?.message ?? error) });
   }

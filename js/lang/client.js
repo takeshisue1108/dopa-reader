@@ -15,7 +15,8 @@ const MAX_CACHED_SENTENCES = 400;
 const DICTIONARY_FILES = 12;
 
 /** Start the worker. `ready` resolves when its dictionary is loaded; `analyze(text)` resolves to
- * { phrases, targets } (§5.5, §5.6), or rejects when the text cannot be analyzed (also at once,
+ * { phrases, targets } (§5.5, §5.6; with `ipa`, the IPA of its English words, when it has any),
+ * or rejects when the text cannot be analyzed (also at once,
  * for every text, after the worker itself has failed). `timings` holds the worker's time in
  * milliseconds for each of the last 1000 analyses it made (an answer from the cache is not one),
  * for SC-W07. */
@@ -49,7 +50,8 @@ export function createAnalyzer({ workerUrl = new URL("./worker.js", import.meta.
     else {
       timings.push(data.ms);
       if (timings.length > 1000) timings.shift();
-      pending.resolve({ phrases: data.phrases, targets: data.targets });
+      const { phrases, targets, ipa } = data;
+      pending.resolve(ipa ? { phrases, targets, ipa } : { phrases, targets });
     }
   };
   worker.onerror = (event) => {

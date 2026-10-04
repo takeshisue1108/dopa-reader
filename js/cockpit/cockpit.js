@@ -11,6 +11,7 @@ import { heardAt, judge, openAt, shoutFor } from "./fire.js";
 import { level, levelStart as levelStartOf } from "./levels.js";
 import { Monitor } from "./monitor.js";
 import { canvas, ctx2d, ditheredGradient, drawOutlined, loadImage, textSprite } from "./pixel.js";
+import * as progress from "../loading.js";
 import { Road } from "./road.js";
 
 // The two sizes of layer: the world (the road, the robots, the cockpit) and the text layer at
@@ -65,10 +66,6 @@ const knownWindows = new Map();
 const flashLog = []; // every large flash allowed, in ms, for the check of SC-W08
 
 const json = async (url) => (await fetch(url)).json();
-const sprite = async (name) => ({
-  img: await loadImage(`${SPRITES}${name}.png`),
-  meta: await json(`${SPRITES}${name}.json`),
-});
 
 /**
  * Set the cockpit up. `opts`: { windows() → the windows of the sentences being sung [{id, label,
@@ -85,40 +82,76 @@ export function load() {
   return loading;
 }
 
+/** Fetch the two faces and every sprite. All are asked for at once, so their number is known
+ * before the first arrives; each is counted in the group "page" as it arrives or fails, for the
+ * bar of the loading words (ED D-163). Elena's poses, the relief turn and the boss may be
+ * missing (null); any other file that is missing fails the load. */
 async function loadSprites() {
-  await Promise.all([
-    document.fonts.load('16px "DotGothic16"'),
-    document.fonts.load('16px "Misaki Mincho"'),
-  ]);
-  const elena = {};
-  for (const pose of ["back", "fist", "button"]) {
-    const base = `${SPRITES}elena/elena_${pose}`;
-    elena[pose] = await Promise.all([
-      json(`${base}.json`),
-      loadImage(`${base}_body.png`),
-      loadImage(`${base}_hand_l.png`),
-      loadImage(`${base}_hand_r.png`),
+  let asked = 0,
+    arrived = 0;
+  const counted = (file) => {
+    asked++;
+    const settle = () => progress.count("page", ++arrived, asked);
+    file.then(settle, settle);
+    return file;
+  };
+  const image = (path) => counted(loadImage(SPRITES + path)),
+    data = (path) => counted(json(SPRITES + path));
+  /** A sprite sheet: its picture and what the picture holds. */
+  const sheet = (name) =>
+    Promise.all([image(`${name}.png`), data(`${name}.json`)]).then(([img, meta]) => ({
+      img,
+      meta,
+    }));
+  const fonts = [
+    counted(document.fonts.load('16px "DotGothic16"')),
+    counted(document.fonts.load('16px "Misaki Mincho"')),
+  ];
+  const pose = (name) =>
+    Promise.all([
+      data(`elena/elena_${name}.json`),
+      image(`elena/elena_${name}_body.png`),
+      image(`elena/elena_${name}_hand_l.png`),
+      image(`elena/elena_${name}_hand_r.png`),
     ])
       .then(([meta, body, l, r]) => ({ meta, body, l, r }))
       .catch(() => null);
-  }
-  const button = {};
-  for (const name of ["up", "pressed", "lit"])
-    button[name] = await loadImage(`${SPRITES}button_${name}.png`);
-  const missiles = [],
-    buildings = [];
-  for (let i = 0; i < 5; i++) missiles.push(await sprite(`missile_${i}`));
-  for (let i = 0; i < BUILDINGS; i++) buildings.push(await sprite(`building_${i}`));
+  const optional = (sprite) => sprite.catch(() => null);
+  const asking = {
+    cockpit: image("cockpit.png"),
+    elena: { back: pose("back"), fist: pose("fist"), button: pose("button") },
+    button: {
+      up: image("button_up.png"),
+      pressed: image("button_pressed.png"),
+      lit: image("button_lit.png"),
+    },
+    missiles: Array.from({ length: 5 }, (_, i) => sheet(`missile_${i}`)),
+    buildings: Array.from({ length: BUILDINGS }, (_, i) => sheet(`building_${i}`)),
+    turn: sheet("meow_turn"),
+    kommy: sheet("kommy_meow_ladder"),
+    kommyTurn: optional(sheet("kommy_meow_turn")), // the relief turn (D-129)
+    boss: optional(sheet("robohilde_ladder")),
+  };
+  progress.count("page", arrived, asked); // everything is asked for: the whole count
+  await Promise.all(fonts);
   return {
-    cockpit: await loadImage(`${SPRITES}cockpit.png`),
-    elena,
-    button,
-    missiles,
-    buildings,
-    turn: await sprite("meow_turn"),
-    kommy: await sprite("kommy_meow_ladder"),
-    kommyTurn: await sprite("kommy_meow_turn").catch(() => null), // the relief turn (D-129)
-    boss: await sprite("robohilde_ladder").catch(() => null),
+    cockpit: await asking.cockpit,
+    elena: {
+      back: await asking.elena.back,
+      fist: await asking.elena.fist,
+      button: await asking.elena.button,
+    },
+    button: {
+      up: await asking.button.up,
+      pressed: await asking.button.pressed,
+      lit: await asking.button.lit,
+    },
+    missiles: await Promise.all(asking.missiles),
+    buildings: await Promise.all(asking.buildings),
+    turn: await asking.turn,
+    kommy: await asking.kommy,
+    kommyTurn: await asking.kommyTurn,
+    boss: await asking.boss,
   };
 }
 
@@ -547,7 +580,13 @@ function stream() {
 function tick(tickNumber) {
   tickNow = tickNumber;
   draw(tickNumber, update(tickNumber));
+  for (const drawn of drawWaiters.splice(0)) drawn();
 }
+
+const drawWaiters = [];
+/** Resolves when the next tick has been drawn: what the scene is now is then on the canvases
+ * (the page waits for this before it takes the loading words away, ED D-164). */
+export const afterNextDraw = () => new Promise((resolve) => drawWaiters.push(resolve));
 
 /** Move on by one tick: the road and the battle, the next robot sent, and the robots and the
  * caption told which windows are open. Returns those windows. */

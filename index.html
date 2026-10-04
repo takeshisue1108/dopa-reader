@@ -3,14 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>ドパドパ読書リーダー</title>
+<title>ドパドパBookリーダー</title>
 <link rel="stylesheet" href="site.css">
+<!-- the light that runs along the bar of the loading words (ED D-163): in the page itself, so
+     that it moves before any other file arrives -->
+<style>
+#loading-bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: -12%; width: 12%; background: rgba(255, 255, 255, 0.35); animation: loading-light 1.2s linear infinite; }
+@keyframes loading-light { to { left: 100%; } }
+</style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%229%22 r=%226%22 fill=%22%23b02a3a%22/%3E%3Crect x=%229%22 y=%220%22 width=%222%22 height=%224%22 fill=%22%23ffcf3f%22/%3E%3C/svg%3E">
 </head>
 <body>
-<!-- The loading words (ED D-154): written in the page with their style, so that they show before
-     any other file arrives; main.js takes them away when the title screen comes. -->
-<div id="loading" role="status" style="position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:#000;color:#fff;font:16px system-ui,sans-serif">ローディング中学校</div>
+<!-- The loading words and their bar (ED D-154, D-163): written in the page with their style, so
+     that they show before any other file arrives; main.js fills the bar as the page's files
+     arrive, and takes all of it away when the title screen has been drawn (D-164). -->
+<div id="loading" style="position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;background:#000;color:#fff;font:16px system-ui,sans-serif">
+  <div role="status">ローディング中学校</div>
+  <div id="loading-bar" role="progressbar" aria-label="ローディング中" aria-valuemin="0" aria-valuemax="100" aria-valuenow="5" style="position:relative;overflow:hidden;width:200px;height:4px;background:#444">
+    <div id="loading-fill" style="width:5%;height:100%;background:#fff;transition:width .2s linear"></div>
+  </div>
+</div>
 <!-- The stage: five pixel layers (made by cockpit.js) and the HTML laid over them (SD-W13). It is
      one frame of 852×480 text pixels, scaled as a whole to the window (ED D-162): what is inside
      is measured in --px, one text pixel. -->
@@ -30,7 +42,7 @@
     </div>
   </div>
   <div id="title" hidden>
-    <h1 class="rainbow">ドパドパ読書リーダー</h1>
+    <h1 class="rainbow">ドパドパBookリーダー</h1>
     <p class="rainbow doujin">同人作品</p>
     <button id="select-book">SELECT A BOOK</button>
   </div>

@@ -1,4 +1,4 @@
-/* ドパドパ読書リーダー (SPEC_dopa v3; ED-10). The stage is the frame of pixel layers, scaled with
+/* ドパドパBookリーダー (SPEC_dopa v3; ED-10). The stage is the frame of pixel layers, scaled with
    hard edges and centered on black (SD-W11). Everything else is HTML in the pixel face (SD-W13). */
 @font-face { font-family: "DotGothic16"; src: url("vendor/fonts/DotGothic16-Regular.ttf"); }
 @font-face { font-family: "Misaki Mincho"; src: url("vendor/fonts/misaki_mincho.ttf"); }
