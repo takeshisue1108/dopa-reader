@@ -21,9 +21,11 @@ const FIGURE_BARS = 2; // a figure stands for this many bars of the song (sing S
 let book = null,
   analyzer = null,
   hooks = {},
-  // open, jump, startChapter, startAt and chapterEnd each begin a new turn; work of an earlier
-  // turn that comes back late (a prepared sentence, a figure's wait) finds turn changed and is
-  // dropped
+  // open, jump, startChapter, startAt, chapterEnd and bookEnd each begin a new turn; work of an
+  // earlier turn that comes back late (a prepared sentence, a figure's wait) finds turn changed
+  // and is dropped. A turn is not one action of the user: a chain of sentences handed to the song
+  // ahead shares the turn of the startAt that began it, and whatever starts the chain again takes
+  // a new one.
   turn = 0,
   playing = false,
   readingAt = { block: 0, sentence: 0 }, // the place being read; it is what savePlace() keeps
@@ -37,14 +39,27 @@ let book = null,
   blockTargets = new Map(),
   frozen = false, // stopped by ⏸: the battle stays frozen when a drawer closes (D-143)
   // a sentence could not be analyzed in this book: reading goes on without a voice (D-150)
-  unscored = false,
-  // The turn whose launch, clear card or figure is up (0: none). While that turn is the current
+  analysisFailed = false,
+  // The turn whose launch, card (a chapter's or the book's end) or figure is up (0: none). While
+  // that turn is the current
   // one the reader is busy: a press, the lever and the bomb do nothing. A jump begins a new turn,
   // so what the turn before had up no longer holds the controls (D-151).
-  showing = 0;
+  busyTurn = 0;
 
 /** Whether a launch, a card or a figure of the current turn is up. */
-const busy = () => showing !== 0 && showing === turn;
+const busy = () => busyTurn !== 0 && busyTurn === turn;
+
+// A hook that the page does not give does nothing. (renderPdfPage is not among them: without it
+// a PDF's figure page is not shown.)
+const NO_HOOKS = {
+  sfx() {},
+  onBookEnd() {},
+  onState() {},
+  onChars() {},
+  onAnnounce() {},
+  onLive() {},
+  onNotice() {},
+};
 
 /** `opts`: { analyzer, sfx(role), renderPdfPage(book, page), onBookEnd(), onState({ playing }),
  * onChars(n), onAnnounce(text) (a title or a card's headline, for a screen reader), onLive(text)
@@ -52,7 +67,7 @@ const busy = () => showing !== 0 && showing === turn;
  * the second form takes that notice away if it is the one shown }. */
 export function init(opts) {
   analyzer = opts.analyzer;
-  hooks = opts;
+  hooks = { ...NO_HOOKS, ...opts };
   sing.setScorer((text) => sungScoreOf(text));
   cockpit.init({
     windows: hitWindows,
@@ -89,15 +104,16 @@ function silentScore(text, charsPerSlot) {
  * without a voice (D-87, D-150): a silent score, 8 slots for 5 characters, with the notice
  * 「歌の素材を読み込めませんでした」 once for the book. */
 async function sungScoreOf(text) {
+  // no kana (U+3040 to U+30FF) and no kanji (U+3400 to U+9FFF), and a Latin letter
   if (!/[぀-ヿ㐀-鿿]/.test(text) && /[A-Za-z]/.test(text))
     return silentScore(text, ENGLISH_CHARS_PER_SLOT);
   try {
     return await analyzer.analyze(text);
   } catch (error) {
-    if (!unscored) {
-      unscored = true;
+    if (!analysisFailed) {
+      analysisFailed = true;
       console.warn(`the words cannot be analyzed: ${error}`);
-      hooks.onNotice && hooks.onNotice(S.songFailed);
+      hooks.onNotice(S.songFailed);
     }
     return silentScore(text, UNSCORED_CHARS_PER_SLOT);
   }
@@ -114,9 +130,9 @@ export async function open(newBook) {
   current = next = previous = null;
   // a new book starts going: every hold of the book before is released, the lever is up (D-143)
   frozen = false;
-  unscored = false;
+  analysisFailed = false;
   playing = true;
-  hooks.onState && hooks.onState({ playing });
+  hooks.onState({ playing });
   sing.hold(false);
   cockpit.hold(false);
   cockpit.setStopped(false);
@@ -134,25 +150,30 @@ export async function open(newBook) {
     sentences: (kept && kept.sentences) || 0,
     blocks: (kept && kept.blocks) || 0,
   };
-  hooks.onChars && hooks.onChars(totals.chars);
+  hooks.onChars(totals.chars);
   cockpit.clearRoad();
   await startChapter(chapterOf[readingAt.block]);
 }
 
+/** A chapter starts (ST-13): its launch stands until its time is up or a click ends it, and the
+ * song's files load behind it (sing.start() is not awaited here; startAt() awaits it again before
+ * the first sentence). When the launch ends, reading starts at `readingAt`, unless the user
+ * stopped the reader during the launch. */
 async function startChapter(chapterIndex) {
   const myTurn = ++turn;
-  showing = myTurn;
+  busyTurn = myTurn;
   cockpit.setSinging(false);
   const chapter = book.chapters[chapterIndex] || { title: book.title };
   sing
     .start(prefs.settings())
     // without its voice files the song runs with no voice, and a notice says so (ST-33, D-87)
-    .then(() => sing.voiceMissing() && hooks.onNotice && hooks.onNotice(S.songFailed))
-    .catch(() => hooks.onNotice && hooks.onNotice(S.songFailed));
-  hooks.onAnnounce && hooks.onAnnounce(chapter.title || book.title); // titles are announced (ED-10)
-  await cockpit.launch(chapter.title || book.title, S.launch); // ST-13, D-103
+    .then(() => sing.voiceMissing() && hooks.onNotice(S.songFailed))
+    .catch(() => hooks.onNotice(S.songFailed));
+  hooks.onAnnounce(chapter.title || book.title); // titles are announced (ED-10)
+  // the launch: the chapter's title on the main monitor and 「M.E.O.W、発進！」 (ST-13, D-103)
+  await cockpit.launch(chapter.title || book.title, S.launch);
   if (myTurn !== turn) return;
-  showing = 0;
+  busyTurn = 0;
   if (playing) startAt(readingAt); // stopped by the user during the launch: ▶ starts it
 }
 
@@ -179,10 +200,12 @@ export function jump(blockIndex) {
 //   playing           runs       runs                  yes           moves      up
 //   paused (⏸)        held       held                  no            (held)     as it was
 //   the lever down    held       runs                  no            stops      down
+//   nothing to read   runs       runs                  no            moves      up
 //
-// A drawer or the book list holds the song and the cockpit's clock on top of any of the three,
-// and closing it gives the state under it back. `playing` is false both when paused and with the
-// lever down; `frozen` tells the two apart. A book is playing from the moment it is opened:
+// "Nothing to read" is after the song could not start and after the book's end: ▶ reads again
+// from the place kept. A drawer or the book list holds the song and the cockpit's clock on top of
+// any of the four, and closing it gives the state under it back. `playing` is true in the first
+// state only; `frozen` is true when paused only. A book is playing from the moment it is opened:
 // while a launch, a figure or a card is up (`busy()`), `playing` is as it was, and when the
 // launch or the figure ends reading goes on only if it is still true.
 /** 「▶ 再生」, or the gear lever moved up (ST-37, D-145): go on from the same point. Nothing else
@@ -190,14 +213,14 @@ export function jump(blockIndex) {
 export function play() {
   if (!book) return;
   frozen = false;
-  if (cockpit.blastBusy()) cockpit.shortenBlast(); // ST-32
+  if (cockpit.blastBusy()) cockpit.shortenBlast(); // a playing explosion is cut short (ST-32)
   cockpit.setLever(false);
   cockpit.setStopped(false);
   playing = true;
   sing.hold(false);
   cockpit.hold(false);
   cockpit.setSinging(true);
-  hooks.onState && hooks.onState({ playing });
+  hooks.onState({ playing });
   if (!current && !busy()) startAt(readingAt);
 }
 /** 「⏸ 一時停止」: everything stops where it is, the count is kept, nothing explodes (ST-18). */
@@ -207,13 +230,13 @@ export function pause() {
   sing.hold(true);
   cockpit.hold(true); // the battle freezes where it is (ST-18)
   cockpit.setSinging(false);
-  hooks.onState && hooks.onState({ playing });
+  hooks.onState({ playing });
 }
 /** A drawer or the book list holds the song and the cockpit's clock while it is open. Closing it
  * gives back what was held before it: after ⏸ the song and the clock stay held, with the lever
  * down the song stays held and the clock runs (its robots still move), and otherwise both go on
- * (D-143, D-148). "Otherwise" is reading, and also a launch: it does not ask `playing`, which is
- * still false during the first launch of a book. */
+ * (D-143, D-148). "Otherwise" is reading, a launch, and a reader with nothing to read: it asks
+ * `frozen` and the lever, not `playing`. */
 export function hold(on) {
   if (on) {
     sing.hold(true);
@@ -238,7 +261,7 @@ export function explode() {
   cockpit.setSinging(false);
   cockpit.setStopped(true);
   cockpit.setLever(true);
-  hooks.onState && hooks.onState({ playing });
+  hooks.onState({ playing });
   return cockpit.explode({ road: true });
 }
 /** A tap on the gear lever: down sets the explosion off, up goes on (D-126, D-145). */
@@ -285,10 +308,10 @@ async function startAt(place, { jumped = false } = {}) {
   // Nothing is sung while this sentence is made ready. If that takes more than 0.6 s (the song's
   // files, the dictionary or its voice sheets are still loading), the charging display shows
   // until it is ready (D-113, ST-43).
-  const charging = setTimeout(() => hooks.onNotice && hooks.onNotice(S.songLoading), 600);
+  const charging = setTimeout(() => hooks.onNotice(S.songLoading), 600);
   const chargingEnds = () => {
     clearTimeout(charging);
-    hooks.onNotice && hooks.onNotice(null, S.songLoading);
+    hooks.onNotice(null, S.songLoading);
   };
   try {
     await sing.start(prefs.settings());
@@ -299,12 +322,13 @@ async function startAt(place, { jumped = false } = {}) {
   } catch (error) {
     chargingEnds();
     console.warn(`the song cannot start: ${error}`);
-    hooks.onNotice && hooks.onNotice(S.songFailed);
-    // nothing is read: the reader does not say it is playing, and ▶ tries again (D-150)
+    hooks.onNotice(S.songFailed);
+    // nothing is read: the reader does not say it is playing, and ▶ tries again (D-150): play()
+    // starts at the place kept when no sentence is current
     if (myTurn === turn) {
       playing = false;
       cockpit.setSinging(false);
-      hooks.onState && hooks.onState({ playing });
+      hooks.onState({ playing });
     }
     return;
   }
@@ -315,7 +339,8 @@ async function startAt(place, { jumped = false } = {}) {
 /** Hand a sentence that was made ready to the song: reading moves to it at its bar line
  * (takeOver, which makes it `current`), and it counts as read at its end (ended). Returns its
  * entry; queueNext keeps that as `next`, and one handed by startAt is neither until its bar
- * line. */
+ * line: till then `current` is the sentence that ended before it in the same block, or null
+ * (after a jump, a figure or a block's end). */
 function handToSong(place, prepared, myTurn, jumped = false) {
   const entry = { place, sentence: prepared.sentence, targets: prepared.targets, jumped };
   entry.job = sing.enqueue(prepared.sung, {
@@ -371,7 +396,10 @@ function targetsOf(blockIndex) {
   return blockTargets.get(blockIndex);
 }
 
-/** The song reached the bar line of a sentence: reading moves to it. */
+/** The song reached the bar line of a sentence: reading moves to it. The caption and the place
+ * kept become this sentence's; at a block's first sentence its targets, and its boss if one
+ * comes, are sent to the cockpit (a heading opens its section); the sentence after it is asked
+ * for ahead. */
 async function takeOver(myTurn, entry) {
   // an entry of an earlier turn is dropped, unless it is the one handed over ahead (no case was
   // found in which `next` outlives its turn: jump, open and chapterEnd all empty it)
@@ -389,7 +417,7 @@ async function takeOver(myTurn, entry) {
     entry.targets.map((target) => target.display),
   );
   // without a voice the caption is the live text, one sentence at a time (PR-02, PR-12)
-  if ((sing.voiceMissing() || unscored) && hooks.onLive) hooks.onLive(entry.sentence.display);
+  if (sing.voiceMissing() || analysisFailed) hooks.onLive(entry.sentence.display);
   if (newBlock) {
     const block = book.blocks[readingAt.block];
     if (block.kind === "heading") cockpit.section(entry.sentence.display, S.launch); // ST-12
@@ -404,14 +432,17 @@ async function takeOver(myTurn, entry) {
   queueNext(turn);
 }
 
+/** Whether a block is its chapter's last block that is not a figure: the one that brings the
+ * boss, and whose robots stay for the chapter's explosion. */
+const isChapterLastBlock = (blockIndex) => blockIndex === lastBlockOf[chapterOf[blockIndex]];
+
 /** The hit points of the boss that comes with a block, or null when none comes. The chapter's
  * last block brings the boss (D-102), unless reading jumped straight into it or it has no target.
- * Its hit points: those a boss had left at the last chapter's end that was reached (kept then,
- * until the next chapter's end writes them anew), as they are; else BOSS_HP, and for such a new
- * boss never more than the block has targets. */
+ * If the boss of the chapter's end reached last was left standing, the new boss starts with the
+ * hit points that one had left (kept then, until the next chapter's end writes them anew).
+ * Otherwise it has BOSS_HP, and never more than the block has targets. */
 function bossHpFor(blockIndex, targets, jumped) {
-  const isBossBlock = blockIndex === lastBlockOf[chapterOf[blockIndex]] && !jumped;
-  if (!isBossBlock || !targets.length) return null;
+  if (!isChapterLastBlock(blockIndex) || jumped || !targets.length) return null;
   const kept = prefs.position(book.key);
   return kept && kept.bossHp ? kept.bossHp : Math.min(BOSS_HP, targets.length);
 }
@@ -432,11 +463,12 @@ async function queueNext(myTurn) {
   // Handing it over here too would sing it twice, and every sentence after it.
   if (myTurn !== turn) return;
   // (a second guard: the place after the current sentence must still be this one)
+  const stillNext = current && nextPlace(book, chapterOf, current.place);
   if (
     !prepared ||
-    !current ||
-    nextPlace(book, chapterOf, current.place)?.block !== place.block ||
-    nextPlace(book, chapterOf, current.place)?.sentence !== place.sentence
+    !stillNext ||
+    stillNext.block !== place.block ||
+    stillNext.sentence !== place.sentence
   )
     return;
   next = handToSong(place, prepared, myTurn);
@@ -448,7 +480,7 @@ async function queueNext(myTurn) {
 function ended(entry) {
   totals.chars += entry.sentence.display.length;
   totals.sentences += 1;
-  hooks.onChars && hooks.onChars(totals.chars);
+  hooks.onChars(totals.chars);
   const block = book.blocks[entry.place.block],
     lastInBlock = entry.place.sentence === block.sentences.length - 1;
   if (lastInBlock) {
@@ -456,11 +488,11 @@ function ended(entry) {
     if (!isChapterLastBlock(entry.place.block)) cockpit.blockEnd();
   }
   savePlace();
-  if (next || entry !== current) return; // the song goes straight on
+  // the song goes straight on into `next`; or this is no longer the sentence read (the next one
+  // took over at the same bar line, or a jump came)
+  if (next || entry !== current) return;
   advanceFrom(entry.place);
 }
-
-const isChapterLastBlock = (blockIndex) => blockIndex === lastBlockOf[chapterOf[blockIndex]];
 
 /** What follows a place when nothing was handed over ahead: the next sentence of its block; or,
  * the block being done (`blockIsDone`: it had nothing to sing), the next block of the chapter (a
@@ -485,7 +517,7 @@ function advanceFrom(place, blockIsDone = false) {
  * it is 4 s. It is a wait of real time: ⏸ and a drawer do not hold it. */
 async function showFigure(blockIndex, myTurn) {
   const figure = book.blocks[blockIndex].figure;
-  showing = myTurn;
+  busyTurn = myTurn;
   cockpit.clearCaption();
   const label = figure.label || "";
   const line = figure.page
@@ -501,7 +533,7 @@ async function showFigure(blockIndex, myTurn) {
   await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
   if (myTurn !== turn) return;
   cockpit.hideMonitor();
-  showing = 0;
+  busyTurn = 0;
   current = null;
   advanceFrom({ block: blockIndex, sentence: 0 }, true);
 }
@@ -510,7 +542,7 @@ async function showFigure(blockIndex, myTurn) {
  * still standing; the clear card; then the next chapter's launch, or the book's end. */
 async function chapterEnd(chapterIndex, isLastChapter) {
   const myTurn = ++turn;
-  showing = myTurn;
+  busyTurn = myTurn;
   current = next = previous = null;
   cockpit.setSinging(false);
   const { blast, bossLeft } = cockpit.chapterBlast(isLastChapter);
@@ -524,7 +556,7 @@ async function chapterEnd(chapterIndex, isLastChapter) {
       : fill(S.clearNumbered, { n: chapterIndex + 1 });
   await showCard(clearLine, 5);
   if (myTurn !== turn) return;
-  showing = 0;
+  busyTurn = 0;
   if (isLastChapter || chapterIndex + 1 >= book.chapters.length) return bookEnd();
   readingAt = { block: book.chapters[chapterIndex + 1].firstBlock, sentence: 0 };
   savePlace();
@@ -534,8 +566,8 @@ async function chapterEnd(chapterIndex, isLastChapter) {
 /** A card with a headline and, under it, the totals read so far, with the fanfare; the headline
  * is announced. Resolves when the card closes: after `seconds`, or at a click on it. */
 function showCard(headline, seconds) {
-  hooks.sfx && hooks.sfx("fanfare");
-  hooks.onAnnounce && hooks.onAnnounce(headline);
+  hooks.sfx("fanfare");
+  hooks.onAnnounce(headline);
   return cockpit.card(
     [
       [headline, true],
@@ -549,16 +581,16 @@ function showCard(headline, seconds) {
  * kept place goes back to the book's start; the totals stay. */
 async function bookEnd() {
   const myTurn = ++turn;
-  showing = myTurn;
+  busyTurn = myTurn;
   await showCard(S.bookEnd, 6);
   if (myTurn !== turn) return; // a jump, or another book, came while the card was up
-  showing = 0;
+  busyTurn = 0;
   playing = false;
-  hooks.onState && hooks.onState({ playing });
+  hooks.onState({ playing });
   cockpit.clearCaption(); // the list that follows leaves the cockpit as it is (D-147)
   readingAt = { block: 0, sentence: 0 };
   savePlace();
-  hooks.onBookEnd && hooks.onBookEnd();
+  hooks.onBookEnd();
 }
 
 function savePlace() {

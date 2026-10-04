@@ -28,7 +28,8 @@ let context = null, // the AudioContext of the song: its own, at the bank's rate
   // the site nothing sets it: main.js calls setMusic with the setting alone.
   quiet = false;
 const prepared = new Map(); // the text of a sentence -> Promise of { text, bars, score }
-// The 60 most sung morae, whose sheets are fetched ahead so that later sentences do not wait.
+const MOST_SUNG_MORAE = 60; // of the bank's list of morae by how often they are sung
+// The most sung morae, whose sheets are fetched ahead so that later sentences do not wait.
 // They are fetched only when the first sentence has its own sheets: fetched at the start, they
 // took the network from it and the first wait was several times as long (ED W-07).
 let mostSung = null;
@@ -99,7 +100,8 @@ export function start(settings) {
       });
       conductor.start();
       if (new URLSearchParams(globalThis.location?.search || "").has("singPerf")) showPerf();
-      mostSung = index.frequent.slice(0, 60); // fetched once the first sentence has its own
+      // fetched once the first sentence has its own sheets
+      mostSung = index.frequent.slice(0, MOST_SUNG_MORAE);
     })().finally(() => (starting = null));
   }
   return starting;
@@ -123,7 +125,9 @@ export async function unlocked() {
 }
 
 /** Have a sentence ready to be sung: its bars, and the sheets of its morae in memory. A sentence
- * is prepared once while it is among the 60 newest. Call after start(). */
+ * is prepared once while it is among the 60 prepared last: asked for again, it is answered from
+ * those, and its sheets are not asked of the bank again. The sheets asked for are counted as the
+ * group "voice" for the charging display (SPEC_dopa §6.2a). Call after start(). */
 export function prepare(text) {
   if (!prepared.has(text)) {
     const request = scoreOf(text).then(async (score) => {
@@ -132,8 +136,7 @@ export function prepare(text) {
         bars
           .flat()
           .map((mora) => mora.k)
-          .concat("ン"), // ン: the ん tails (D-31), which the site's analysis no longer sends
-        // the sheets of the newest sentence, for the charging display (§6.2a)
+          .concat("ン"), // ン: the ん tails (歌 ED D-31), which the site's analysis no longer sends
         (arrived, of) => progress.count("voice", arrived, of),
       );
       if (mostSung) {
@@ -152,8 +155,10 @@ export function prepare(text) {
 /**
  * Hand a prepared sentence to the song (call after start()): it starts at the next free bar line,
  * after the sentences handed over before it. `onStart(job)` is called at its bar line and
- * `onEnd(job)` at the end of its last bar. Returns the job; `lightSpans(job)` and
- * `secondsInto(job)` follow it.
+ * `onEnd(job)` at the end of its last bar; for a sentence with nothing to sing, both at its bar
+ * line; for one that the song had to drop, `onEnd` alone can come. Neither comes after clear()
+ * or stop() took the sentence back. Returns the job; `lightSpans(job)` and `secondsInto(job)`
+ * follow it.
  */
 export function enqueue(sentence, { onStart, onEnd } = {}) {
   const job = {
@@ -180,7 +185,8 @@ export function enqueue(sentence, { onStart, onEnd } = {}) {
   return job;
 }
 
-/** How long a sentence has been sung, in seconds from its bar line; negative before it starts. */
+/** How long a sentence has been sung, in seconds from its bar line; negative before it starts
+ * (-1 while the song has not yet placed it). */
 export const secondsInto = (job) => (job.t0 === undefined ? -1 : context.currentTime - job.t0);
 
 /** Take back every sentence handed over: the one being sung stops, the song goes on (ST-09). */

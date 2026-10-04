@@ -10,13 +10,15 @@ import * as progress from "../loading.js";
 
 // sentences kept in the cache; the one asked for longest ago is dropped first
 const MAX_CACHED_SENTENCES = 400;
-const DICTIONARY_FILES = 12; // the files of kuromoji's dictionary, for the charging display
+// The files of kuromoji's dictionary, for the charging display before the worker has said
+// anything; the worker counts them itself as they arrive and says the same number (worker.js).
+const DICTIONARY_FILES = 12;
 
 /** Start the worker. `ready` resolves when its dictionary is loaded; `analyze(text)` resolves to
  * { phrases, targets } (§5.5, §5.6), or rejects when the text cannot be analyzed (also at once,
- * for every text, after the worker itself has failed). `timings` holds
- * the worker's time in milliseconds for each of the last 1000 analyses it made (an answer from
- * the cache is not one), for SC-W07. */
+ * for every text, after the worker itself has failed). `timings` holds the worker's time in
+ * milliseconds for each of the last 1000 analyses it made (an answer from the cache is not one),
+ * for SC-W07. */
 export function createAnalyzer({ workerUrl = new URL("./worker.js", import.meta.url) } = {}) {
   const worker = new Worker(workerUrl, { type: "module" });
   const pendingById = new Map(); // id -> { resolve, reject }

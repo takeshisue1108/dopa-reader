@@ -209,44 +209,22 @@ function build(sprites) {
  * place over the main monitor. Positions are fractions of the frame. */
 function placeHtml() {
   const pct = (value, whole) => `${(value / whole) * 100}%`;
-  const fire = document.getElementById("fire"),
-    go = document.getElementById("go"),
-    gear = document.getElementById("gear"),
-    bomb = document.getElementById("bomb"),
-    list = document.getElementById("list");
-  Object.assign(fire.style, {
-    left: pct(MISSILE.x - 6, WORLD.w),
-    top: pct(MISSILE.y - 8, WORLD.h),
-    width: pct(52, WORLD.w),
-    height: pct(34, WORLD.h),
-  });
+  /** Lay the element over a rectangle of a layer (the world's pixels, or the text layer's). */
+  const lay = (id, x, y, width, height, layer = WORLD) =>
+    Object.assign(document.getElementById(id).style, {
+      left: pct(x, layer.w),
+      top: pct(y, layer.h),
+      width: pct(width, layer.w),
+      height: pct(height, layer.h),
+    });
+  lay("fire", MISSILE.x - 6, MISSILE.y - 8, 52, 34);
   // the play icon's button: the strip above the lever (D-152)
-  Object.assign(go.style, {
-    left: pct(LEVER.x - 16, WORLD.w),
-    top: pct(LEVER.y - 8 - GO_HEIGHT, WORLD.h),
-    width: pct(32, WORLD.w),
-    height: pct(GO_HEIGHT, WORLD.h),
-  });
-  Object.assign(gear.style, {
-    left: pct(LEVER.x - 16, WORLD.w),
-    top: pct(LEVER.y - 8, WORLD.h),
-    width: pct(32, WORLD.w),
-    height: pct(38, WORLD.h),
-  });
+  lay("go", LEVER.x - 16, LEVER.y - 8 - GO_HEIGHT, 32, GO_HEIGHT);
+  lay("gear", LEVER.x - 16, LEVER.y - 8, 32, 38);
   // the bomb's button: from under the lever to the bottom edge (the bomb grows upward from BOMB.y)
-  Object.assign(bomb.style, {
-    left: pct(LEVER.x - 20, WORLD.w),
-    top: pct(LEVER.y + 30, WORLD.h),
-    width: pct(40, WORLD.w),
-    height: pct(WORLD.h - LEVER.y - 30, WORLD.h),
-  });
+  lay("bomb", LEVER.x - 20, LEVER.y + 30, 40, WORLD.h - LEVER.y - 30);
   const main = pieces.main;
-  Object.assign(list.style, {
-    left: pct(main.x + 8, TEXT.w),
-    top: pct(main.y + 8, TEXT.h),
-    width: pct(main.w - 16, TEXT.w),
-    height: pct(main.h - 16, TEXT.h),
-  });
+  lay("list", main.x + 8, main.y + 8, main.w - 16, main.h - 16, TEXT);
 }
 
 /** Fit the frame to the browser's window, keeping 426 : 240. */

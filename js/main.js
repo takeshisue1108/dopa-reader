@@ -89,7 +89,7 @@ async function showList() {
   list.replaceChildren();
   const add = (tag, props = {}, parent = list) =>
     parent.appendChild(Object.assign(document.createElement(tag), props));
-  const message = add("div", { className: "message", id: "list-message" });
+  add("div", { className: "message", id: "list-message" });
 
   add("h2", { textContent: S.fromFile });
   const input = add("input", { type: "file", accept: ".txt,.md,.pdf", hidden: true });
@@ -170,11 +170,10 @@ async function showList() {
   list.querySelector("button.book")?.focus();
 }
 
-/** A line of text at the top of the list (a loading notice, why a file cannot be read). It goes
- * away after 6 s (ST-27). */
 /** Close the list without choosing a book (Esc, while a book is being read): the cockpit comes
- * back as it was, and the reading goes on if it was going (D-147). The three things that
- * showList() did for the book being read are undone here: the list, the cockpit's scene, the hold. */
+ * back as it was, and the reading goes on if it was going (D-147). The four things that
+ * showList() did for the book being read are undone here: the list, the floating controls, the
+ * cockpit's scene, the hold. */
 function closeList() {
   $("list").hidden = true;
   listOpen = false;
@@ -183,6 +182,8 @@ function closeList() {
   reader.hold(false);
 }
 
+/** A line of text at the top of the list (why a file cannot be read). It goes away after 6 s
+ * (ST-27). */
 function listMessage(text) {
   const line = $("list-message");
   if (!line) return;
@@ -191,7 +192,7 @@ function listMessage(text) {
 }
 
 /** The charging display at the top of the list while a file is opened (ST-26): `percent` is the
- * stage reached. */
+ * stage reached (0 at the start, then a fixed number for each stage), not a measure. */
 function listCharge(percent) {
   const line = $("list-message");
   if (!line) return;
@@ -226,25 +227,22 @@ function setCharge(place, percent) {
 }
 
 let stopCharging = null; // stops the watch on the files, while the charging display is up
-const SONG_FILES = ["dictionary", "score", "instruments"]; // what the song itself needs, once
-const SONG_SHARE = 70; // the part of the bar that the song's own files take when they are waited for
 /** The charging display in the middle of the glass, while a sentence waits for the song's files,
- * the dictionary or its voice (ST-43). {n} is measured (loading.js). When the song's own files
- * are still coming, they fill the first 70 of the bar and the voice sheets of the sentence that
- * waits fill the rest; when only the voice is waited for, it fills the whole bar. The voice counts
- * from the moment its sheets are asked for during this wait, so the bar never goes back. */
+ * the dictionary or its voice (ST-43). {n} is measured (chargePercent in loading.js). When the
+ * song's own files are still coming, they fill the first 70 of the bar and the voice sheets of the
+ * sentence that waits fill the rest; when only the voice is waited for, it fills the whole bar.
+ * The voice counts from the moment its sheets are asked for during this wait: until then the
+ * "voice" group still holds the finished count of the sentence before, which would show a full
+ * bar that then falls. (The song's own part can still fall once: when the instruments' index
+ * arrives, it says how many sheets are to come.) */
 function showCharge() {
   if (stopCharging) return;
   const place = $("charge"),
-    songWaited = loading.pending().some((group) => SONG_FILES.includes(group));
+    songWaited = loading.songPending();
   let voiceAsked = false;
   const update = () => {
     voiceAsked ||= loading.pending().includes("voice");
-    const voice = voiceAsked ? loading.share(["voice"]) : 0,
-      percent = songWaited
-        ? SONG_SHARE * loading.share(SONG_FILES) + (100 - SONG_SHARE) * voice
-        : 100 * voice;
-    setCharge(place, Math.floor(percent));
+    setCharge(place, Math.floor(loading.chargePercent(songWaited, voiceAsked)));
   };
   update();
   place.hidden = false;
@@ -258,6 +256,7 @@ function hideCharge() {
   $("charge").replaceChildren(); // made anew, and said anew, the next time
 }
 
+// ---------------------------------------------------------------- opening a book
 /** Open a bundled book or a kept upload by its key. */
 async function openKey(key) {
   if (key.startsWith("file:")) {
@@ -313,7 +312,7 @@ async function start(opened) {
   await cockpit.board();
   $("controls").hidden = false;
   cockpit.wake();
-  updateJumpLabel();
+  startJumpLabelTimer();
   reader.open(book);
 }
 
@@ -362,15 +361,15 @@ function wireControls() {
     const page = Number($("jump-page").value),
       number = Number($("jump-number").value);
     // the block of that number; for a PDF with a page given, the first block on that page or
-    // after it
-    let target = number - 1;
+    // after it, and the book's first block when there is none
+    let blockIndex = number - 1;
     if (page && book.format === "pdf")
-      target = Math.max(
+      blockIndex = Math.max(
         0,
         book.blocks.findIndex((block) => block.page >= page),
       );
     $("jump").close();
-    if (target >= 0) reader.jump(target);
+    if (blockIndex >= 0) reader.jump(blockIndex);
   };
   addEventListener("keydown", (event) => {
     if (event.key === "Escape" && listOpen && book) closeList();
@@ -433,7 +432,7 @@ function openDrawer(id) {
 
 /** The button 「ブロック n/total」 shows the block being read; it is written anew every second,
  * by a timer that each call of this starts. */
-function updateJumpLabel() {
+function startJumpLabelTimer() {
   const refresh = () => {
     if (book)
       $("open-jump").textContent = fill(S.blockOf, {
@@ -446,7 +445,9 @@ function updateJumpLabel() {
 }
 
 let noticeTimer = null;
-/** A notice at the lower edge (歌の素材を…); `null` with `which` clears that one. */
+/** A notice at the lower edge (歌の素材を…), which goes away after 6 s; `null` with `which`
+ * clears that one. The charging words are not written there: they bring the charging display up,
+ * and `null` with them takes it away. */
 function notice(text, which) {
   // the charging words have a display of their own (D-153)
   if (text === S.songLoading) return showCharge();
@@ -472,8 +473,9 @@ function watchOrientation() {
   check();
 }
 
-/** The gallery (?gallery=1; SPEC_dopa v3 §9.3, Q-21): the sound effects, the five explosion
- * tiers, the bomb's steps and a spinning enemy, for the owner to judge. Not a part of reading. */
+/** The gallery (?gallery=1; SPEC_dopa v3 §9.3, Q-21): buttons for the sound effects, the five
+ * explosion tiers and the bomb at six of its levels, and one that hides or shows the list, for
+ * the owner to judge. Not a part of reading. */
 function showGallery() {
   const panel = Object.assign(document.createElement("div"), { id: "gallery" });
   panel.style.cssText =
@@ -510,10 +512,10 @@ function showGallery() {
       cockpit.gallery.blast(1 + 2 * index);
     }),
   );
-  [0, 1, 3, 5, 7, 9].forEach((step) =>
+  [0, 1, 3, 5, 7, 9].forEach((level) =>
     // the counts are the first count of each level, 0 to 9 (levelStart in levels.js)
-    addButton(`爆弾 Lv${step}`, () =>
-      cockpit.gallery.count([0, 1, 5, 8, 13, 21, 33, 53, 84, 135][step]),
+    addButton(`爆弾 Lv${level}`, () =>
+      cockpit.gallery.count([0, 1, 5, 8, 13, 21, 33, 53, 84, 135][level]),
     ),
   );
   addButton("一覧を隠す", () => ($("list").hidden = !$("list").hidden));

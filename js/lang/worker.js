@@ -24,7 +24,8 @@ const DICTIONARY_PATH = new URL("../../vendor/kuromoji/dict/", import.meta.url).
 const ENGLISH_KANA_URL = new URL("../../data/lang/en_kana.json", import.meta.url);
 
 // kuromoji fetches its dictionary's 12 files with XMLHttpRequest, and nothing else here does: each
-// request that ends is one file more for the charging display.
+// request that ends (loaded or failed) is one file more for the charging display. The page counts
+// 0 of the same 12 before the first message (client.js).
 const DICTIONARY_FILES = 12;
 let dictionaryArrived = 0;
 const NativeRequest = self.XMLHttpRequest;

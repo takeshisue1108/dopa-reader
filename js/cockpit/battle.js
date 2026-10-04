@@ -82,6 +82,8 @@ export class Battle {
       speed = Math.max(0.07, (z0 - zEnd) / Math.max(8, inTicks - 4));
     // a robot: laneX (its lane, in pixels from the middle at z = 1), z0 and zEnd (where it sets
     // out and where it stands), born (the tick it was sent), speed (z a tick), sign (its noun);
+    // aimed (shot: its missiles are on their way, and until they arrive it does not pass by,
+    // leave or meet the lever's explosion, D-149);
     // later: frozen and stopAt (hit: where and when), shatterAt (destroyed), leftAt and leaveFrom
     // (sent away), forcedAt (rushing after the lever's explosion), passed (gone by, uncounted)
     this.enemies.push({

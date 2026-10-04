@@ -216,7 +216,10 @@ export function create(ctx, out, song, options = {}) {
     chordLog = [],
     // with `record`: each note of the score as played, with t (when it sounds) and seconds
     played = [];
-  let bandSources = []; // the score's notes that may still sound: { source, end }
+  // The score's notes, for stop(): { source, end }. At each bar line those that end before the
+  // time scheduled up to are dropped from the list; that time is up to LOOKAHEAD ahead of what
+  // sounds, so a note dropped here may still be sounding.
+  let bandSources = [];
   // The sentence being sung: what enqueue() was given ({ bars, onStart, onBar, onEnd } and
   // whatever else the caller put on it), and, added here: next (the bar to schedule next), events,
   // sources, lines, t0 (the time of its bar line), at (the score's slot there), notes, kinds, used,
@@ -422,8 +425,8 @@ export function create(ctx, out, song, options = {}) {
   // The times of the slot lines of a sentence: entry k is when its slot k starts (8 to a bar),
   // and the last entry is the end of its last bar. The bars already scheduled have their real
   // times; the others follow the score's tempo at the speed now, or at the speed that waits for
-  // the next bar line. A sentence not yet started
-  // starts where `before` (the sentence before it, started) ends. null when neither has started.
+  // the next bar line. A sentence not yet started starts where `before` (the sentence before it,
+  // started) ends. null when neither has started.
   function slotTimes(sentence, before = null) {
     let startSlot, t;
     if (sentence.t0 !== undefined) {
@@ -462,6 +465,7 @@ export function create(ctx, out, song, options = {}) {
         voiceBus.gain.value = settings.mute ? 0 : voice;
       }
     },
+    // Change options given to create(). Nothing in the site calls this.
     setOptions(changes) {
       Object.assign(settings, changes);
     },
