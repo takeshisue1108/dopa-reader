@@ -14,8 +14,8 @@ const PHONEMES = ["<pad>", "<unk>", "<s>", "</s>",
   "EY1", "EY2", "F", "G", "HH", "IH0", "IH1", "IH2", "IY0", "IY1", "IY2", "JH", "K", "L", "M", "N",
   "NG", "OW0", "OW1", "OW2", "OY0", "OY1", "OY2", "P", "R", "S", "SH", "T", "TH", "UH0", "UH1", "UH2",
   "UW", "UW0", "UW1", "UW2", "V", "W", "Y", "Z", "ZH"];
-const START = PHONEMES.indexOf("<s>"),
-  END = PHONEMES.indexOf("</s>");
+const START = PHONEMES.indexOf("<s>");
+const END = PHONEMES.indexOf("</s>");
 const MOST_PHONEMES = 20; // the decoder writes at most this many, as g2p_en does
 
 /** The parts of the model, in the order they lie in the weights file, with their shapes
@@ -34,18 +34,28 @@ export const PARTS = [
   ["fc_w", [PHONEMES.length, 256]],
   ["fc_b", [1, PHONEMES.length]],
 ];
+
 /** How many numbers the weights file holds. */
-export const WEIGHT_COUNT = PARTS.reduce((sum, [, [rows, columns]]) => sum + rows * columns, 0);
+export const WEIGHT_COUNT = PARTS.reduce((sum, [, [rows, columns]]) => {
+  const numbersOfPart = rows * columns;
+  return sum + numbersOfPart;
+}, 0);
 
 /** matrix (rows × columns, row after row) times vector, plus bias: one number for each row. */
 function affine(matrix, rows, columns, vector, bias) {
   const out = new Float32Array(rows);
+
   for (let row = 0; row < rows; row++) {
     let sum = bias[row];
     const at = row * columns;
-    for (let column = 0; column < columns; column++) sum += matrix[at + column] * vector[column];
+
+    for (let column = 0; column < columns; column++) {
+      sum += matrix[at + column] * vector[column];
+    }
+
     out[row] = sum;
   }
+
   return out;
 }
 
@@ -56,15 +66,30 @@ const sigmoid = (x) => 1 / (1 + Math.exp(-x));
  * value. */
 function gruStep(x, h, wIh, wHh, bIh, bHh) {
   const hidden = h.length;
-  const fromInput = affine(wIh, 3 * hidden, x.length, x, bIh),
-    fromState = affine(wHh, 3 * hidden, hidden, h, bHh);
+  const gateRows = 3 * hidden;
+  const fromInput = affine(wIh, gateRows, x.length, x, bIh);
+  const fromState = affine(wHh, gateRows, hidden, h, bHh);
+
   const next = new Float32Array(hidden);
+
   for (let i = 0; i < hidden; i++) {
-    const reset = sigmoid(fromInput[i] + fromState[i]),
-      update = sigmoid(fromInput[hidden + i] + fromState[hidden + i]),
-      fresh = Math.tanh(fromInput[2 * hidden + i] + reset * fromState[2 * hidden + i]);
-    next[i] = (1 - update) * fresh + update * h[i];
+    // where the three gates keep their number for place i
+    const resetAt = i;
+    const updateAt = hidden + i;
+    const freshAt = 2 * hidden + i;
+
+    const reset = sigmoid(fromInput[resetAt] + fromState[resetAt]);
+    const update = sigmoid(fromInput[updateAt] + fromState[updateAt]);
+
+    const stateLetThrough = reset * fromState[freshAt];
+    const fresh = Math.tanh(fromInput[freshAt] + stateLetThrough);
+
+    // the new value, and the old one as far as the update gate keeps it
+    const freshShare = (1 - update) * fresh;
+    const keptShare = update * h[i];
+    next[i] = freshShare + keptShare;
   }
+
   return next;
 }
 
@@ -75,39 +100,65 @@ function gruStep(x, h, wIh, wHh, bIh, bHh) {
  * z is read as an unknown letter, as g2p_en reads it.
  */
 export function createG2p(weights) {
-  if (weights.length !== WEIGHT_COUNT)
+  if (weights.length !== WEIGHT_COUNT) {
     throw new Error(`g2p: ${weights.length} weights, not ${WEIGHT_COUNT}`);
+  }
+
   const part = {};
   let at = 0;
   for (const [name, [rows, columns]] of PARTS) {
-    part[name] = weights.subarray(at, at + rows * columns);
-    at += rows * columns;
+    const numbersOfPart = rows * columns;
+    part[name] = weights.subarray(at, at + numbersOfPart);
+    at += numbersOfPart;
   }
-  const row = (matrix, index, columns = 256) =>
-    matrix.subarray(index * columns, (index + 1) * columns);
+
+  const row = (matrix, index, columns = 256) => {
+    const rowStart = index * columns;
+    const rowEnd = (index + 1) * columns;
+    return matrix.subarray(rowStart, rowEnd);
+  };
 
   return function predict(word) {
     // the encoder: letter after letter, then the end mark; its last state is what the decoder
     // starts from
     let state = new Float32Array(256);
-    for (const letter of [...word.toLowerCase(), "</s>"]) {
+    const lettersAndEnd = [...word.toLowerCase(), "</s>"];
+
+    for (const letter of lettersAndEnd) {
       const index = LETTERS.indexOf(letter);
-      const input = row(part.enc_emb, index < 0 ? LETTERS.indexOf("<unk>") : index);
+
+      let knownIndex = index;
+      if (index < 0) {
+        knownIndex = LETTERS.indexOf("<unk>");
+      }
+
+      const input = row(part.enc_emb, knownIndex);
       state = gruStep(input, state, part.enc_w_ih, part.enc_w_hh, part.enc_b_ih, part.enc_b_hh);
     }
+
     // the decoder: from the start mark, the likeliest phoneme at each step, until the end mark
     const phonemes = [];
     let input = row(part.dec_emb, START);
+
     for (let step = 0; step < MOST_PHONEMES; step++) {
       state = gruStep(input, state, part.dec_w_ih, part.dec_w_hh, part.dec_b_ih, part.dec_b_hh);
       const scores = affine(part.fc_w, PHONEMES.length, 256, state, part.fc_b);
+
       let best = 0;
-      for (let index = 1; index < scores.length; index++)
-        if (scores[index] > scores[best]) best = index;
-      if (best === END) break;
+      for (let index = 1; index < scores.length; index++) {
+        if (scores[index] > scores[best]) {
+          best = index;
+        }
+      }
+
+      if (best === END) {
+        break;
+      }
+
       phonemes.push(PHONEMES[best]);
       input = row(part.dec_emb, best);
     }
+
     return phonemes;
   };
 }

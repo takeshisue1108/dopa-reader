@@ -6,6 +6,7 @@
 // prepared.score): that is its analysis, { phrases, ... }, not the Day Life score. It comes from
 // the browser's analysis (SPEC_dopa v3 §5.5), given by setScorer().
 import * as bank from "./bank.js";
+import * as bankEn from "./bank_en.js";
 import { barsOf } from "./bars.js";
 import { create, SLOT } from "./conductor.js";
 import * as progress from "../loading.js";
@@ -19,20 +20,24 @@ const DEFAULT_MUSIC = 0.35;
 const LOUDEST_BAND = 1.5;
 const KEPT_SENTENCES = 60; // how many prepared sentences are kept
 
-let context = null, // the AudioContext of the song: its own, at the bank's rate (SD-S07)
-  conductor = null, // the song clock, while 「歌う」 runs
-  starting = null, // the promise of start(), while it is under way
-  held = false, // paused by the reader: the song stands still
-  musicSetting = DEFAULT_MUSIC,
-  // A spoken paragraph is being read over the song (`underSpeech` in bandLevels and setMusic). In
-  // the site nothing sets it: main.js calls setMusic with the setting alone.
-  quiet = false;
+let context = null; // the AudioContext of the song: its own, at the bank's rate (SD-S07)
+let conductor = null; // the song clock, while 「歌う」 runs
+let starting = null; // the promise of start(), while it is under way
+let held = false; // paused by the reader: the song stands still
+let musicSetting = DEFAULT_MUSIC;
+
+// A spoken paragraph is being read over the song (`underSpeech` in bandLevels and setMusic). In
+// the site nothing sets it: main.js calls setMusic with the setting alone.
+let quiet = false;
+
 const prepared = new Map(); // the text of a sentence -> Promise of { text, bars, score }
 const MOST_SUNG_MORAE = 60; // of the bank's list of morae by how often they are sung
+
 // The most sung morae, whose sheets are fetched ahead so that later sentences do not wait.
 // They are fetched only when the first sentence has its own sheets: fetched at the start, they
 // took the network from it and the first wait was several times as long (ED W-07).
 let mostSung = null;
+
 let scoreOf = null; // text -> Promise of { phrases, ... }, from the reader
 
 /** Where scores come from: `fn(text)` resolves to { phrases } (SPEC_sing §5.2) and may carry more
@@ -47,11 +52,18 @@ export function setScorer(fn) {
  * SC-S05 and SC-S10; the last 200 are kept. */
 export const trace = [];
 
+let sungInEnglish = 0; // sentences handed to the song with an English score, for the checks
+
 /** The level of the accompaniment (every part of the score, the drums too) for a 「音楽」 setting
  * (0 to 1): its own level at the setting's default, in proportion below it, at most 1.5 above;
  * half of that while a spoken paragraph is read over the song (Q-22). */
 export function bandLevels(setting, underSpeech = false) {
-  const level = Math.min(LOUDEST_BAND, setting / DEFAULT_MUSIC) * (underSpeech ? 0.5 : 1);
+  const inProportion = setting / DEFAULT_MUSIC;
+  const ownLevel = Math.min(LOUDEST_BAND, inProportion);
+
+  const underSpeechShare = underSpeech ? 0.5 : 1;
+  const level = ownLevel * underSpeechShare;
+
   return { band: level };
 }
 
@@ -63,14 +75,26 @@ export function bandLevels(setting, underSpeech = false) {
  * the light from taking the sentence for finished.
  */
 export function lightSpans(job) {
-  if (job.t0 === undefined) return [];
-  const spans = job.events.map((sung) => ({
-    t: sung.t - job.t0,
-    dur: 0,
-    start: sung.start,
-    end: sung.end,
-  }));
-  if (job.next < job.bars.length) spans.push({ t: Infinity, dur: 0, start: 0, end: 0 });
+  if (job.t0 === undefined) {
+    return [];
+  }
+
+  const spans = job.events.map((sung) => {
+    const secondsFromBarLine = sung.t - job.t0;
+    return {
+      t: secondsFromBarLine,
+      dur: 0,
+      start: sung.start,
+      end: sung.end,
+    };
+  });
+
+  const barsToCome = job.next < job.bars.length;
+  if (barsToCome) {
+    const neverStarts = { t: Infinity, dur: 0, start: 0, end: 0 };
+    spans.push(neverStarts);
+  }
+
   return spans;
 }
 
@@ -84,33 +108,55 @@ export const running = () => !!conductor;
  * are the reader's ({ speed, music, voice, melody }). Rejects when a file of the Day Life score cannot be
  * fetched (song.js). Without the voice bank or the instruments the song still starts (D-87). */
 export function start(settings) {
-  if (conductor) return Promise.resolve();
+  if (conductor) {
+    return Promise.resolve();
+  }
+
   if (!starting) {
-    starting = (async () => {
-      if (!context) context = new AudioContext({ sampleRate: 24000 });
+    const startSong = async () => {
+      if (!context) {
+        context = new AudioContext({ sampleRate: 24000 });
+      }
+
       const song = await loadSong();
       const index = await bank.init(context);
       await instruments.init(context);
       await instruments.ensure();
+
       musicSetting = settings.music;
-      conductor = create(context, context.destination, song, {
+      const levels = bandLevels(musicSetting, quiet);
+      const options = {
         speed: settings.speed,
         voice: settings.voice ?? 1,
         melody: settings.melody,
-        ...bandLevels(musicSetting, quiet),
-      });
+        ...levels,
+      };
+      conductor = create(context, context.destination, song, options);
       conductor.start();
-      if (new URLSearchParams(globalThis.location?.search || "").has("singPerf")) showPerf();
+
+      const address = globalThis.location?.search || "";
+      const query = new URLSearchParams(address);
+      if (query.has("singPerf")) {
+        showPerf();
+      }
+
       // fetched once the first sentence has its own sheets
       mostSung = index.frequent.slice(0, MOST_SUNG_MORAE);
-    })().finally(() => (starting = null));
+    };
+
+    starting = startSong().finally(() => {
+      starting = null;
+    });
   }
+
   return starting;
 }
 
 /** Stop the song: voice and accompaniment. */
 export function stop() {
-  if (!conductor) return;
+  if (!conductor) {
+    return;
+  }
   conductor.stop();
   conductor = null;
 }
@@ -119,10 +165,41 @@ export function stop() {
  * context is not running and the song is not held, this first asks it to resume and waits up to
  * 300 ms for that. */
 export async function unlocked() {
-  if (!context) return false;
-  if (context.state !== "running" && !held)
-    await Promise.race([context.resume(), new Promise((resolve) => setTimeout(resolve, 300))]);
+  if (!context) {
+    return false;
+  }
+
+  if (context.state !== "running" && !held) {
+    const resumed = context.resume();
+    const waited = new Promise((resolve) => setTimeout(resolve, 300));
+    await Promise.race([resumed, waited]);
+  }
+
   return context.state === "running";
+}
+
+// The bars of an English sentence in syllables, with their sheets in memory, or null when the
+// sentence has no English score or the English voice cannot be used: it is then sung in katakana.
+async function inEnglish(score, countVoice) {
+  if (!score.englishPhrases) {
+    return null;
+  }
+
+  const there = await bankEn.init(context);
+  if (!there) {
+    return null;
+  }
+
+  const bars = barsOf(score.englishPhrases);
+  const entries = bars.flat();
+  const sung = entries.filter((entry) => entry.syllable);
+  const syllables = sung.map((entry) => entry.syllable);
+  await bankEn.ensure(syllables, countVoice);
+
+  if (bankEn.isMissing()) {
+    return null;
+  }
+  return bars;
 }
 
 /** Have a sentence ready to be sung: its bars, and the sheets of its morae in memory. A sentence
@@ -131,25 +208,43 @@ export async function unlocked() {
  * group "voice" for the charging display (SPEC_dopa §6.2a). Call after start(). */
 export function prepare(text) {
   if (!prepared.has(text)) {
-    const request = scoreOf(text).then(async (score) => {
-      const bars = barsOf(score.phrases);
-      await bank.ensure(
-        bars
-          .flat()
-          .map((mora) => mora.k)
-          .concat("ン"), // ン: the ん tails (歌 ED D-31), which the site's analysis no longer sends
-        (arrived, of) => progress.count("voice", arrived, of),
-      );
+    const makeReady = async (score) => {
+      const countVoice = (arrived, of) => progress.count("voice", arrived, of);
+
+      // an English sentence is sung by the English voice when its bank is there (ED D-170, A-47)
+      const englishBars = await inEnglish(score, countVoice);
+      const bars = englishBars || barsOf(score.phrases);
+
+      if (!englishBars) {
+        const morae = bars.flat();
+        const sounds = morae.map((mora) => mora.k);
+        // ン: the ん tails (歌 ED D-31), which the site's analysis no longer sends
+        const needed = sounds.concat("ン");
+        await bank.ensure(needed, countVoice);
+      }
+
       if (mostSung) {
         bank.ensure(mostSung).catch(() => {});
         mostSung = null;
       }
-      return { text, bars, score };
-    });
+
+      return {
+        text,
+        bars,
+        score,
+      };
+    };
+
+    const request = scoreOf(text).then(makeReady);
     request.catch(() => prepared.delete(text));
     prepared.set(text, request);
-    if (prepared.size > KEPT_SENTENCES) prepared.delete(prepared.keys().next().value);
+
+    if (prepared.size > KEPT_SENTENCES) {
+      const preparedLongestAgo = prepared.keys().next().value;
+      prepared.delete(preparedLongestAgo);
+    }
   }
+
   return prepared.get(text);
 }
 
@@ -166,46 +261,86 @@ export function enqueue(sentence, { onStart, onEnd } = {}) {
     text: sentence.text,
     bars: sentence.bars,
     score: sentence.score,
+
     onStart: (started) => {
-      trace.push({
+      let slot = null;
+      if (conductor) {
+        slot = conductor.slotSeconds();
+      }
+
+      const noted = {
         text: started.text,
         t0: started.t0,
         bars: started.bars.length,
-        slot: conductor ? conductor.slotSeconds() : null,
-      });
-      if (trace.length > 200) trace.shift();
-      onStart && onStart(started);
+        slot,
+      };
+      trace.push(noted);
+      if (trace.length > 200) {
+        trace.shift();
+      }
+
+      if (onStart) {
+        onStart(started);
+      }
     },
+
     onEnd: (ended) => {
       const noted = trace.findLast((entry) => entry.t0 === ended.t0);
-      if (noted) Object.assign(noted, { end: ended.end, spans: lightSpans(ended) });
-      onEnd && onEnd(ended);
+      if (noted) {
+        noted.end = ended.end;
+        noted.spans = lightSpans(ended);
+      }
+
+      if (onEnd) {
+        onEnd(ended);
+      }
     },
   };
+
+  const firstBar = sentence.bars[0] || [];
+  if (firstBar.some((entry) => entry.syllable)) {
+    sungInEnglish += 1;
+  }
+
   conductor.enqueue(job);
   return job;
 }
 
 /** How long a sentence has been sung, in seconds from its bar line; negative before it starts
  * (-1 while the song has not yet placed it). */
-export const secondsInto = (job) => (job.t0 === undefined ? -1 : context.currentTime - job.t0);
+export function secondsInto(job) {
+  if (job.t0 === undefined) {
+    return -1;
+  }
+  return context.currentTime - job.t0;
+}
 
 /** Take back every sentence handed over: the one being sung stops, the song goes on (ST-09). */
 export function clear() {
-  if (conductor) conductor.clear();
+  if (conductor) {
+    conductor.clear();
+  }
 }
 
 /** Hold the song still (a pause, an open drawer), or let it go on from the same point (ST-08). */
 export function hold(on) {
   held = on;
-  if (!context) return;
-  if (on) context.suspend();
-  else context.resume();
+  if (!context) {
+    return;
+  }
+
+  if (on) {
+    context.suspend();
+  } else {
+    context.resume();
+  }
 }
 
 /** The user moved 「歌」: the level of the voice alone, 0 to 1 (ED D-114). */
 export function setVoice(level) {
-  if (conductor) conductor.setLevels({ voice: level });
+  if (conductor) {
+    conductor.setLevels({ voice: level });
+  }
 }
 
 /** The song's mode (「歌のモード」, ED D-157; SPEC_dopa §6.12): "fragments" (the voice's pitches
@@ -213,19 +348,27 @@ export function setVoice(level) {
  * the voice sings naturally, and the chord's root where the score gives none). It holds from the next sentence that starts. Before the song runs
  * it does nothing: start() takes the mode from the settings. */
 export function setMelody(mode) {
-  if (conductor) conductor.setMelody(mode);
+  if (conductor) {
+    conductor.setMelody(mode);
+  }
 }
 
 /** The owner moved 「速さ」: the tempo follows at the next bar line (D-23). */
 export function setSpeed(speed) {
-  if (conductor) conductor.setSpeed(speed);
+  if (conductor) {
+    conductor.setSpeed(speed);
+  }
 }
 
 /** The owner moved 「音楽」, or a spoken paragraph starts or ends over the song. */
 export function setMusic(setting, underSpeech = quiet) {
   musicSetting = setting;
   quiet = underSpeech;
-  if (conductor) conductor.setLevels(bandLevels(musicSetting, quiet));
+
+  if (conductor) {
+    const levels = bandLevels(musicSetting, quiet);
+    conductor.setLevels(levels);
+  }
 }
 
 /**
@@ -234,64 +377,125 @@ export function setMusic(setting, underSpeech = quiet) {
  * tells it, for how many seconds the sound card was fed silence because the page was late.
  */
 export function perf() {
-  const work = conductor
-    ? conductor.work
-    : { calls: 0, totalMs: 0, worstMs: 0, over5ms: 0, behind: 0 };
-  const megabytes = (bytes) => Math.round(bytes / 1e5) / 10;
+  let work = { calls: 0, totalMs: 0, worstMs: 0, over5ms: 0, behind: 0 };
+  if (conductor) {
+    work = conductor.work;
+  }
+
+  // to one decimal place
+  const megabytes = (bytes) => {
+    const tenths = Math.round(bytes / 1e5);
+    return tenths / 10;
+  };
+
+  let meanMs = 0;
+  if (work.calls) {
+    meanMs = work.totalMs / work.calls;
+  }
+
+  const voiceSheets = bank.loaded() + bankEn.loaded();
+  const voiceBytes = bank.bytes() + bankEn.bytes();
+  const instrumentBytes = instruments.bytes();
+
+  let underrunSeconds = null;
+  if (context?.playoutStats) {
+    underrunSeconds = context.playoutStats.fallbackFramesDuration / 1000;
+  }
+
   return {
     calls: work.calls,
-    meanMs: work.calls ? work.totalMs / work.calls : 0,
+    meanMs,
     worstMs: work.worstMs,
     over5ms: work.over5ms,
     behind: work.behind,
-    voiceSheets: bank.loaded(),
-    voiceMegabytes: megabytes(bank.bytes()),
-    instrumentMegabytes: megabytes(instruments.bytes()),
-    underrunSeconds: context?.playoutStats
-      ? context.playoutStats.fallbackFramesDuration / 1000
-      : null,
+    voiceSheets,
+    voiceMegabytes: megabytes(voiceBytes),
+    instrumentMegabytes: megabytes(instrumentBytes),
+    underrunSeconds,
   };
 }
 
 /** With ?singPerf=1 in the address: the numbers of perf() in a corner of the page, once a second. */
 function showPerf() {
-  const corner = Object.assign(document.createElement("pre"), { id: "sing-perf" });
+  const corner = document.createElement("pre");
+  corner.id = "sing-perf";
   corner.style.cssText =
     "position:fixed;left:8px;bottom:8px;z-index:99;margin:0;font:12px/1.4 monospace;color:#fff;background:rgba(0,0,0,.6);padding:4px 8px;pointer-events:none";
   document.body.append(corner);
+
   setInterval(() => {
     const stats = perf();
-    corner.textContent =
-      `scheduler ${stats.calls} calls, mean ${stats.meanMs.toFixed(2)} ms, worst ${stats.worstMs.toFixed(1)} ms, ${stats.over5ms} over 5 ms, behind ${stats.behind}\n` +
-      `sheets ${stats.voiceSheets} = ${stats.voiceMegabytes} MB, instruments ${stats.instrumentMegabytes} MB` +
-      (stats.underrunSeconds === null ? "" : `, underrun ${stats.underrunSeconds.toFixed(2)} s`);
+
+    const schedulerLine = `scheduler ${stats.calls} calls, mean ${stats.meanMs.toFixed(2)} ms, worst ${stats.worstMs.toFixed(1)} ms, ${stats.over5ms} over 5 ms, behind ${stats.behind}\n`;
+    const sheetsLine = `sheets ${stats.voiceSheets} = ${stats.voiceMegabytes} MB, instruments ${stats.instrumentMegabytes} MB`;
+
+    let underrun = "";
+    if (stats.underrunSeconds !== null) {
+      underrun = `, underrun ${stats.underrunSeconds.toFixed(2)} s`;
+    }
+
+    corner.textContent = schedulerLine + sheetsLine + underrun;
   }, 1000);
 }
 
 /** Seconds from now to the bar line `bars` bars after the one that sounded last. Call after
  * start(). */
-export const secondsToBarLine = (bars) => conductor.barLine(bars) - context.currentTime;
+export function secondsToBarLine(bars) {
+  const lineTime = conductor.barLine(bars);
+  return lineTime - context.currentTime;
+}
 
-/** What the song is doing, for checks: { running, held, quiet, state, melody }, `state` being the
- * AudioContext's ("running", "suspended") or null before there is one, and `melody` the mode the
- * next sentence will be planned in (null before the song runs). */
-export const condition = () => ({
-  running: !!conductor,
-  melody: conductor ? conductor.melody() : null,
-  held,
-  quiet,
-  state: context ? context.state : null,
-});
+/** What the song is doing, for checks: { running, held, quiet, state, melody, english }, `state`
+ * being the AudioContext's ("running", "suspended") or null before there is one, `melody` the
+ * mode the next sentence will be planned in (null before the song runs), and `english` what the
+ * English voice has: { sheets (in memory), missing (it cannot be used), sung (how many sentences
+ * were handed to the song with an English score) }. */
+export function condition() {
+  let melody = null;
+  if (conductor) {
+    melody = conductor.melody();
+  }
+
+  let state = null;
+  if (context) {
+    state = context.state;
+  }
+
+  const english = {
+    sheets: bankEn.loaded(),
+    missing: bankEn.isMissing(),
+    sung: sungInEnglish,
+  };
+
+  return {
+    running: !!conductor,
+    melody,
+    held,
+    quiet,
+    state,
+    english,
+  };
+}
 
 /** The song's clock, in seconds. */
-export const now = () => (context ? context.currentTime : 0);
+export function now() {
+  if (!context) {
+    return 0;
+  }
+  return context.currentTime;
+}
 
 /** The song's AudioContext (for the time the user hears, SD-W10, and for the effects, SD-W12). */
 export const audioContext = () => context;
 
 /** The length, in seconds, of the slot scheduled last: up to 0.3 s ahead of what sounds. It
  * follows the score's tempo map. */
-export const slotSeconds = () => (conductor ? conductor.slotSeconds() : SLOT);
+export function slotSeconds() {
+  if (!conductor) {
+    return SLOT;
+  }
+  return conductor.slotSeconds();
+}
 
 /**
  * The times of the slots of a sentence handed to the song, on the song's clock: entry k is when
@@ -300,11 +504,17 @@ export const slotSeconds = () => (conductor ? conductor.slotSeconds() : SLOT);
  * yet started is placed after `before`, the started sentence it follows. null when the song is not
  * running or the sentence cannot be placed yet.
  */
-export const slotTimes = (job, before = null) =>
-  conductor ? conductor.slotTimes(job, before) : null;
+export function slotTimes(job, before = null) {
+  if (!conductor) {
+    return null;
+  }
+  return conductor.slotTimes(job, before);
+}
 
 /** The AudioContext, made at once (a phone needs it made and resumed inside a tap). */
 export function ensureContext() {
-  if (!context) context = new AudioContext({ sampleRate: 24000 });
+  if (!context) {
+    context = new AudioContext({ sampleRate: 24000 });
+  }
   return context;
 }

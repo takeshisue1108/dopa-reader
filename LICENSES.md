@@ -20,6 +20,7 @@
 - pdf.js — Apache License 2.0。
 - compromise（Spencer Kelly、英語の品詞を見分けるために使用）— MIT License（vendor/compromise/LICENSE）。
 - CMUdict（Carnegie Mellon University の発音辞書、Copyright (C) 1993-2015 Carnegie Mellon University）— BSD 形式のライセンス。英単語の発音の表（data/lang/en_ipa.json、IPA 表記）は、この発音から作りました。
+- Kokoro-82M（hexgrad）— Apache License 2.0。英語の歌声（data/sing/bank/en/）は、このモデルの声 af_heart に音の長さと高さを与えて歌わせ、子音・音節の前半・後半・母音に切り出したものです。
 - g2p_en（Kyubyong Park・Jongseok Kim）— Apache License 2.0。辞書に無い英単語の発音を綴りから作るモデル（data/lang/en_g2p.bin）と、品詞で発音の変わる語の一覧（data/lang/en_homographs.json）に使っています。
 - DotGothic16 — SIL Open Font License 1.1（vendor/fonts/OFL_DotGothic16.txt）。
 - 美咲フォント — 作者の定める自由な利用条件（vendor/fonts/LICENSE_misaki.txt）。

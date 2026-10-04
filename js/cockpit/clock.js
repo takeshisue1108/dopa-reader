@@ -2,13 +2,16 @@
 // only when floor(t * 30) changes, t being the clock's time in seconds. The time stands still
 // while paused; while the tab is hidden the time goes on but nothing ticks.
 
-export const FPS = 30; // ticks a second
-let onTick = null,
-  lastTick = -1,
-  running = false,
-  startedAt = 0,
-  pausedAt = 0,
-  pausedTotal = 0;
+// ticks a second
+export const FPS = 30;
+
+let onTick = null;
+let lastTick = -1;
+let running = false;
+let startedAt = 0;
+let pausedAt = 0;
+let pausedTotal = 0;
+
 const tickCosts = [];
 let measuring = false;
 
@@ -22,12 +25,15 @@ export function start(tick, { measure = false } = {}) {
   running = true;
   startedAt = performance.now();
   lastTick = -1;
+
   requestAnimationFrame(loop);
 }
+
 /** Whether start() has been called. */
 export function started() {
   return onTick !== null;
 }
+
 /** Stop the clock's time and its ticks until resume(). */
 export function pause() {
   if (running) {
@@ -35,34 +41,60 @@ export function pause() {
     pausedAt = performance.now();
   }
 }
+
 /** Go on from the time at which pause() stopped the clock. */
 export function resume() {
   if (!running && onTick) {
-    pausedTotal += performance.now() - pausedAt;
+    const pausedMs = performance.now() - pausedAt;
+    pausedTotal += pausedMs;
+
     running = true;
     requestAnimationFrame(loop);
   }
 }
+
 /** The clock's time in seconds: since start(), less the time spent paused. */
 export function now() {
-  return ((running ? performance.now() : pausedAt) - startedAt - pausedTotal) / 1000;
+  // while paused, the time stands at the moment of the pause
+  let readAt = pausedAt;
+  if (running) {
+    readAt = performance.now();
+  }
+
+  const sinceStartMs = readAt - startedAt;
+  const runningMs = sinceStartMs - pausedTotal;
+  return runningMs / 1000;
 }
+
 /** With `measure`: how long each of the last 3000 ticks took, in milliseconds. */
 export function tickTimes() {
   return tickCosts.slice();
 }
 
 function loop() {
-  if (!running) return;
-  const tickNumber = Math.floor(now() * FPS);
-  if (tickNumber !== lastTick && !document.hidden) {
+  if (!running) {
+    return;
+  }
+
+  const seconds = now();
+  const tickNumber = Math.floor(seconds * FPS);
+
+  const isNewTick = tickNumber !== lastTick;
+  if (isNewTick && !document.hidden) {
     lastTick = tickNumber;
+
     const before = performance.now();
     onTick(tickNumber);
+
     if (measuring) {
-      tickCosts.push(performance.now() - before);
-      if (tickCosts.length > 3000) tickCosts.shift();
+      const costMs = performance.now() - before;
+      tickCosts.push(costMs);
+
+      if (tickCosts.length > 3000) {
+        tickCosts.shift();
+      }
     }
   }
+
   requestAnimationFrame(loop);
 }

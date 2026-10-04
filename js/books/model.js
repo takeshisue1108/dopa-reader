@@ -51,9 +51,11 @@ export class Spoken {
   /** Text that is shown and sung as written. */
   plain(text) {
     for (let k = 0; k < text.length; k++) {
-      this.map.push(this.display.length + k);
-      this.ends.push(this.display.length + k + 1);
+      const displayIndex = this.display.length + k;
+      this.map.push(displayIndex);
+      this.ends.push(displayIndex + 1);
     }
+
     this.display += text;
     this.speech += text;
     return this;
@@ -63,9 +65,13 @@ export class Spoken {
    * and ends at the base's end). */
   ruby(base, reading) {
     for (let k = 0; k < reading.length; k++) {
-      this.map.push(this.display.length);
-      this.ends.push(this.display.length + base.length);
+      const baseStart = this.display.length;
+      this.map.push(baseStart);
+
+      const baseEnd = baseStart + base.length;
+      this.ends.push(baseEnd);
     }
+
     this.display += base;
     this.speech += reading;
     return this;
@@ -84,33 +90,57 @@ export class Spoken {
  */
 export function sentencesOf(spoken, lang, whole = false) {
   const { display, speech, map, ends } = spoken;
+
   let ranges;
   if (whole) {
-    const start = display.length - display.trimStart().length;
+    const withoutSpaceAtStart = display.trimStart();
+    const start = display.length - withoutSpaceAtStart.length;
     const end = display.trimEnd().length;
-    ranges = start < end ? [[start, end]] : [];
-  } else ranges = sentenceRanges(display, lang);
+    if (start < end) {
+      ranges = [[start, end]];
+    } else {
+      ranges = [];
+    }
+  } else {
+    ranges = sentenceRanges(display, lang);
+  }
+
   const sentences = [];
-  let speechIndex = 0; // map never goes back, so the speech of each sentence is one run from here
+  // map never goes back, so the speech of each sentence is one run from here
+  let speechIndex = 0;
+
   for (const [start, end] of ranges) {
-    while (speechIndex < map.length && map[speechIndex] < start) speechIndex++;
+    while (speechIndex < map.length && map[speechIndex] < start) {
+      speechIndex++;
+    }
     const speechStart = speechIndex;
-    while (speechIndex < map.length && map[speechIndex] < end) speechIndex++;
+    while (speechIndex < map.length && map[speechIndex] < end) {
+      speechIndex++;
+    }
+
     const sentenceDisplay = display.slice(start, end);
     const sentenceSpeech = speech.slice(speechStart, speechIndex);
-    sentences.push({
+
+    let sentenceMap = null;
+    let sentenceEnds = null;
+    if (sentenceSpeech !== sentenceDisplay) {
+      // the indexes count from the sentence's start
+      const mapOfRun = map.slice(speechStart, speechIndex);
+      sentenceMap = mapOfRun.map((index) => index - start);
+
+      const endsOfRun = ends.slice(speechStart, speechIndex);
+      sentenceEnds = endsOfRun.map((index) => index - start);
+    }
+
+    const sentence = {
       display: sentenceDisplay,
       speech: sentenceSpeech,
-      map:
-        sentenceSpeech === sentenceDisplay
-          ? null
-          : map.slice(speechStart, speechIndex).map((index) => index - start),
-      ends:
-        sentenceSpeech === sentenceDisplay
-          ? null
-          : ends.slice(speechStart, speechIndex).map((index) => index - start),
-    });
+      map: sentenceMap,
+      ends: sentenceEnds,
+    };
+    sentences.push(sentence);
   }
+
   return sentences;
 }
 
@@ -134,38 +164,80 @@ export class BookBuilder {
   addText(spoken, { page = null, lang = null } = {}) {
     const blockLang = lang ?? detectLang(spoken.display);
     const sentences = sentencesOf(spoken, blockLang);
-    if (!sentences.length) return null;
-    return this.push({ kind: "text", chapter: 0, page, lang: blockLang, sentences, figure: null });
+    if (!sentences.length) {
+      return null;
+    }
+
+    const block = {
+      kind: "text",
+      chapter: 0,
+      page,
+      lang: blockLang,
+      sentences,
+      figure: null,
+    };
+    return this.push(block);
   }
 
   /** A text block of the lines of one paragraph of a hard-wrapped file or of a PDF, joined by
    * the rule of their language (D-68). Nothing is added for no lines. */
   addParagraph(lines, { page = null } = {}) {
-    if (!lines.length) return null;
-    const lang = detectLang(lines.join(""));
-    return this.addText(plainSpoken(joinLines(lines, lang)), { page, lang });
+    if (!lines.length) {
+      return null;
+    }
+
+    const allText = lines.join("");
+    const lang = detectLang(allText);
+
+    const joined = joinLines(lines, lang);
+    const spoken = plainSpoken(joined);
+    const blockFields = {
+      page,
+      lang,
+    };
+    return this.addText(spoken, blockFields);
   }
 
   /** A heading block, sung as one sentence (D-103). `level`: 1 is the shallowest. */
   addHeading(spoken, level, { page = null } = {}) {
     const lang = detectLang(spoken.display);
     const sentences = sentencesOf(spoken, lang, true);
-    if (!sentences.length) return null;
-    const index = this.push({ kind: "heading", chapter: 0, page, lang, sentences, figure: null });
+    if (!sentences.length) {
+      return null;
+    }
+
+    const block = {
+      kind: "heading",
+      chapter: 0,
+      page,
+      lang,
+      sentences,
+      figure: null,
+    };
+    const index = this.push(block);
+
     this.headingLevels.push([index, level]);
     return index;
   }
 
   /** A figure block: no sentences, so nothing to sing and nothing to shoot (D-107). */
   addFigure({ src = null, label = null, page = null, kind = "image", table = null }) {
-    return this.push({
+    const figure = {
+      src,
+      label,
+      page,
+      kind,
+      table,
+    };
+    const block = {
       kind: "figure",
       chapter: 0,
       page,
       lang: null,
       sentences: [],
-      figure: { src, label, page, kind, table },
-    });
+      figure,
+    };
+    return this.push(block);
   }
 
   /** Add a block; returns its index. Used by the add… methods. */
@@ -179,14 +251,29 @@ export class BookBuilder {
    * least twice, as block indexes.
    */
   chapterStarts() {
+    // how many headings each level has
     const counts = new Map();
-    for (const [, level] of this.headingLevels) counts.set(level, (counts.get(level) ?? 0) + 1);
-    const levels = [...counts.keys()].sort((a, b) => a - b);
+    for (const [, level] of this.headingLevels) {
+      const countSoFar = counts.get(level) ?? 0;
+      counts.set(level, countSoFar + 1);
+    }
+
+    // the levels from the shallowest
+    const levels = [...counts.keys()];
+    levels.sort((a, b) => a - b);
+
     const level = levels.find((candidate) => counts.get(candidate) >= 2);
-    if (level === undefined) return [];
-    return this.headingLevels
-      .filter(([, candidate]) => candidate === level)
-      .map(([index]) => index);
+    if (level === undefined) {
+      return [];
+    }
+
+    const starts = [];
+    for (const [index, candidate] of this.headingLevels) {
+      if (candidate === level) {
+        starts.push(index);
+      }
+    }
+    return starts;
   }
 
   /**
@@ -198,22 +285,61 @@ export class BookBuilder {
    */
   build({ key = null, title, author = null, format, endNotes = [] }) {
     const blocks = this.blocks;
-    if (!blocks.some((block) => block.sentences.length))
+
+    const hasSentence = blocks.some((block) => block.sentences.length);
+    if (!hasSentence) {
       throw new BookError(MESSAGES.empty, "empty");
+    }
+
     const chapterBlocks = this.chapterStarts();
     const chapters = [];
-    if (!chapterBlocks.length || chapterBlocks[0] > 0) chapters.push({ title, firstBlock: 0 });
-    for (const blockIndex of chapterBlocks)
-      chapters.push({ title: blocks[blockIndex].sentences[0].display, firstBlock: blockIndex });
+
+    const textBeforeFirstHeading = !chapterBlocks.length || chapterBlocks[0] > 0;
+    if (textBeforeFirstHeading) {
+      const openingChapter = {
+        title,
+        firstBlock: 0,
+      };
+      chapters.push(openingChapter);
+    }
+
+    for (const blockIndex of chapterBlocks) {
+      const headingWords = blocks[blockIndex].sentences[0].display;
+      const chapter = {
+        title: headingWords,
+        firstBlock: blockIndex,
+      };
+      chapters.push(chapter);
+    }
+
     numberChapters(blocks, chapters);
-    let jaSentences = 0,
-      enSentences = 0;
-    for (const block of blocks)
-      if (block.lang === "ja") jaSentences += block.sentences.length;
-      else if (block.lang === "en") enSentences += block.sentences.length;
+
+    let jaSentences = 0;
+    let enSentences = 0;
+    for (const block of blocks) {
+      if (block.lang === "ja") {
+        jaSentences += block.sentences.length;
+      } else if (block.lang === "en") {
+        enSentences += block.sentences.length;
+      }
+    }
     const bookLang = jaSentences >= enSentences ? "ja" : "en";
-    for (const block of blocks) if (block.kind === "figure") block.lang = bookLang;
-    return { key, title, author, format, chapters, blocks, endNotes };
+
+    for (const block of blocks) {
+      if (block.kind === "figure") {
+        block.lang = bookLang;
+      }
+    }
+
+    return {
+      key,
+      title,
+      author,
+      format,
+      chapters,
+      blocks,
+      endNotes,
+    };
   }
 }
 
@@ -221,18 +347,30 @@ export class BookBuilder {
  * or before it. `chapters` are in order, the first at block 0. */
 export function numberChapters(blocks, chapters) {
   let chapter = 0;
+
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
-    while (chapter + 1 < chapters.length && chapters[chapter + 1].firstBlock <= blockIndex)
+    while (chapter + 1 < chapters.length) {
+      const nextChapter = chapters[chapter + 1];
+      const nextHasStarted = nextChapter.firstBlock <= blockIndex;
+      if (!nextHasStarted) {
+        break;
+      }
       chapter++;
+    }
+
     blocks[blockIndex].chapter = chapter;
   }
 }
 
 /** A file name without its folder and its extension. */
 export function baseName(name) {
-  const file = String(name ?? "")
-    .split(/[\\/]/)
-    .pop();
+  const path = String(name ?? "");
+  const pathParts = path.split(/[\\/]/);
+  const file = pathParts.pop();
+
   const dot = file.lastIndexOf(".");
-  return dot > 0 ? file.slice(0, dot) : file;
+  if (dot > 0) {
+    return file.slice(0, dot);
+  }
+  return file;
 }

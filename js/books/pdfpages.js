@@ -19,19 +19,40 @@ export const PAGE_BOX = { width: 1022, height: 528 };
  */
 export async function renderPdfPage(book, pageNumber, box = PAGE_BOX) {
   const pdfDocument = book?.pdfDocument;
-  if (!pdfDocument || !(pageNumber >= 1 && pageNumber <= pdfDocument.numPages)) return null;
+  if (!pdfDocument) {
+    return null;
+  }
+  const isPageOfDocument = pageNumber >= 1 && pageNumber <= pdfDocument.numPages;
+  if (!isPageOfDocument) {
+    return null;
+  }
+
   const page = await pdfDocument.getPage(pageNumber);
+
+  // the largest scale at which the whole page fits the box
   const unscaled = page.getViewport({ scale: 1 });
-  const viewport = page.getViewport({
-    scale: Math.min(box.width / unscaled.width, box.height / unscaled.height),
-  });
+  const scaleToWidth = box.width / unscaled.width;
+  const scaleToHeight = box.height / unscaled.height;
+  const scale = Math.min(scaleToWidth, scaleToHeight);
+  const viewport = page.getViewport({ scale });
+
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.floor(viewport.width));
-  canvas.height = Math.max(1, Math.floor(viewport.height));
+  const wholeWidthPx = Math.floor(viewport.width);
+  canvas.width = Math.max(1, wholeWidthPx);
+  const wholeHeightPx = Math.floor(viewport.height);
+  canvas.height = Math.max(1, wholeHeightPx);
+
   const context = canvas.getContext("2d");
   context.fillStyle = "#fff";
   context.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: context, viewport }).promise;
+
+  const renderOptions = {
+    canvasContext: context,
+    viewport,
+  };
+  const renderTask = page.render(renderOptions);
+  await renderTask.promise;
+
   page.cleanup();
   return canvas;
 }

@@ -13,18 +13,33 @@ export const MODES = {
   harmonicMinor: [0, 2, 3, 5, 7, 8, 11],
 };
 export const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-export const LO = 53,
-  HI = 77; // the range of the voice bank's recordings (bank.js), F3 to F5 (SD-S04)
+
+// the range of the voice bank's recordings (bank.js), F3 to F5 (SD-S04)
+export const LO = 53;
+export const HI = 77;
 
 /** A note name as a pitch class, 0 (C) to 11 (B): "F#" -> 6, "Bb" -> 10. */
-export const pitchClass = (name) =>
-  (NOTE[name[0]] + (name.match(/#/g) || []).length - (name.match(/b/g) || []).length + 12) % 12;
+export function pitchClass(name) {
+  const letter = name[0];
+  const natural = NOTE[letter];
+
+  const sharps = name.match(/#/g) || [];
+  const flats = name.match(/b/g) || [];
+
+  return (natural + sharps.length - flats.length + 12) % 12;
+}
 
 /** The key in force at a beat: the last entry of the list at or before it; the first entry when
  * none is. */
 export function keyAt(keys, beat) {
   let key = keys[0];
-  for (const candidate of keys) if (candidate.beat <= beat) key = candidate;
+
+  for (const candidate of keys) {
+    if (candidate.beat <= beat) {
+      key = candidate;
+    }
+  }
+
   return key;
 }
 
@@ -35,48 +50,92 @@ export function keyAt(keys, beat) {
  * in. The chords must be in order. */
 export function chordAt(progression, slot) {
   const beat = 1 + slot / 2;
-  let current = null,
-    lastSounding = null;
+
+  // the last entry at or before the beat, and the last of them that is not a rest
+  let current = null;
+  let lastSounding = null;
   for (const candidate of progression.chords) {
-    if (candidate.beat > beat) break;
-    if (!candidate.isRest) lastSounding = candidate;
+    if (candidate.beat > beat) {
+      break;
+    }
+    if (!candidate.isRest) {
+      lastSounding = candidate;
+    }
     current = candidate;
   }
-  const chord =
-    current && !current.isRest
-      ? current
-      : lastSounding || progression.chords.find((candidate) => !candidate.isRest);
-  return { chord, key: keyAt(progression.keys, chord.beat), rest: !current || current.isRest };
+
+  const rest = !current || current.isRest;
+
+  let chord;
+  if (!rest) {
+    chord = current;
+  } else if (lastSounding) {
+    chord = lastSounding;
+  } else {
+    chord = progression.chords.find((candidate) => !candidate.isRest);
+  }
+
+  const key = keyAt(progression.keys, chord.beat);
+  return {
+    chord,
+    key,
+    rest,
+  };
 }
 
 /** How many slots a progression lasts (2 to a beat), filled up to a whole bar of 8. */
-export const slotsOf = (progression) => {
+export function slotsOf(progression) {
   // the number of the last beat (beats are counted from 1), which is the count of beats
-  const end = Math.max(...progression.chords.map((chord) => chord.beat + chord.duration - 1));
-  return Math.ceil(end / 4) * 8; // filled to a whole bar
-};
+  const lastBeats = progression.chords.map((chord) => chord.beat + chord.duration - 1);
+  const end = Math.max(...lastBeats);
+
+  // filled to a whole bar
+  const bars = Math.ceil(end / 4);
+  return bars * 8;
+}
 
 /** The scale a chord is read in, as { tonic, scale, degree }: the key's, or the mode named by
  * `borrowed` on the same tonic; with `applied` = n the chord is degree n of the major scale built
  * on degree `root` of that scale. */
 export function local(chord, key) {
   const tonic = pitchClass(key.tonic);
+
   let scale = MODES[key.scale] || MODES.major;
-  if (typeof chord.borrowed === "string" && MODES[chord.borrowed]) scale = MODES[chord.borrowed];
-  if (chord.applied)
+  if (typeof chord.borrowed === "string") {
+    const borrowedScale = MODES[chord.borrowed];
+    if (borrowedScale) {
+      scale = borrowedScale;
+    }
+  }
+
+  if (chord.applied) {
+    const appliedTonic = (tonic + scale[chord.root - 1]) % 12;
     return {
-      tonic: (tonic + scale[chord.root - 1]) % 12,
+      tonic: appliedTonic,
       scale: MODES.major,
       degree: chord.applied,
     };
-  return { tonic, scale, degree: chord.root };
+  }
+
+  return {
+    tonic,
+    scale,
+    degree: chord.root,
+  };
 }
 
 /** Semitones from the chord's root up to its scale step: 1 is the root, 2 the next scale note, 8
  * the octave, 0 the note below. */
 export function semis(scale, rootDegree, stepFromRoot) {
+  // the step's place in the scale, from 0; 7 and more are in the octaves above, less than 0 below
   const index = rootDegree - 1 + stepFromRoot - 1;
-  return scale[((index % 7) + 7) % 7] + 12 * Math.floor(index / 7) - scale[(rootDegree - 1) % 7];
+
+  const placeInOctave = ((index % 7) + 7) % 7;
+  const octaves = Math.floor(index / 7);
+  const stepAboveTonic = scale[placeInOctave] + 12 * octaves;
+
+  const rootAboveTonic = scale[(rootDegree - 1) % 7];
+  return stepAboveTonic - rootAboveTonic;
 }
 
 /** A chord's notes as pitch classes: {root, bass, pcs}, with the scale and the degree it is
@@ -86,15 +145,44 @@ export function semis(scale, rootDegree, stepFromRoot) {
 export function tones(chord, key) {
   const { tonic, scale, degree } = local(chord, key);
   const root = (tonic + scale[degree - 1]) % 12;
+
   let steps = [1, 3, 5];
-  if (chord.type >= 7) steps.push(7);
-  if (chord.type >= 9) steps.push(9);
-  for (const suspension of chord.suspensions || [])
-    steps = steps.filter((step) => step !== 3).concat(suspension);
-  steps = steps.concat(chord.adds || []).filter((step) => !(chord.omits || []).includes(step));
-  const pitchClassOf = (step) => (root + semis(scale, degree, step) + 120) % 12;
-  const bass = pitchClassOf([1, 3, 5, 7][chord.inversion || 0]);
-  return { root, bass, pcs: steps.map(pitchClassOf), scale, degree };
+  if (chord.type >= 7) {
+    steps.push(7);
+  }
+  if (chord.type >= 9) {
+    steps.push(9);
+  }
+
+  // a suspension takes the place of the third
+  const suspensions = chord.suspensions || [];
+  for (const suspension of suspensions) {
+    const withoutThird = steps.filter((step) => step !== 3);
+    steps = withoutThird.concat(suspension);
+  }
+
+  const adds = chord.adds || [];
+  const omits = chord.omits || [];
+  const withAdds = steps.concat(adds);
+  steps = withAdds.filter((step) => !omits.includes(step));
+
+  const pitchClassOf = (step) => {
+    const aboveRoot = semis(scale, degree, step);
+    return (root + aboveRoot + 120) % 12;
+  };
+
+  const inversion = chord.inversion || 0;
+  const bassStep = [1, 3, 5, 7][inversion];
+  const bass = pitchClassOf(bassStep);
+
+  const pcs = steps.map(pitchClassOf);
+  return {
+    root,
+    bass,
+    pcs,
+    scale,
+    degree,
+  };
 }
 
 /** The MIDI pitch of a fragment step over a chord (§6.4.4): the root sits from LO+2 to LO+13, and
@@ -102,37 +190,78 @@ export function tones(chord, key) {
  * can only matter for a range other than the default one.) */
 export function noteOf(chord, key, step, lo = LO, hi = HI) {
   const { root, scale, degree } = tones(chord, key);
+
   let rootPitch = root + 48;
-  while (rootPitch < lo + 2) rootPitch += 12;
-  let pitch = rootPitch + semis(scale, degree, step);
-  while (pitch > hi) pitch -= 12;
-  while (pitch < lo) pitch += 12;
+  while (rootPitch < lo + 2) {
+    rootPitch += 12;
+  }
+
+  const aboveRoot = semis(scale, degree, step);
+  let pitch = rootPitch + aboveRoot;
+  while (pitch > hi) {
+    pitch -= 12;
+  }
+  while (pitch < lo) {
+    pitch += 12;
+  }
+
   return pitch;
 }
 
 /** A chord's name ("D#m7", "rest"): for the plan's chord names, the conductor's chord log, the
  * tests and the test page. Sharps only. */
 export function chordName(chord, key) {
-  if (chord.isRest) return "rest";
+  if (chord.isRest) {
+    return "rest";
+  }
+
   const { root, bass, scale, degree } = tones(chord, key);
-  const interval = (step) => ((semis(scale, degree, step) % 12) + 12) % 12;
-  const suspended = (chord.suspensions || []).includes(4)
-    ? "sus4"
-    : (chord.suspensions || []).includes(2)
-      ? "sus2"
-      : "";
-  const quality = suspended ? "" : interval(3) === 4 ? "" : "m";
-  const major7 = interval(7) === 11 ? "maj" : "";
-  const extension = chord.type === 5 ? "" : major7 + chord.type;
-  return (
-    NAMES[root] +
-    quality +
-    extension +
-    suspended +
-    (chord.adds || []).map((added) => `(add${added})`).join("") +
-    (bass !== root ? "/" + NAMES[bass] : "")
-  );
+
+  const interval = (step) => {
+    const aboveRoot = semis(scale, degree, step);
+    return ((aboveRoot % 12) + 12) % 12;
+  };
+
+  let suspended = "";
+  if ((chord.suspensions || []).includes(4)) {
+    suspended = "sus4";
+  } else if ((chord.suspensions || []).includes(2)) {
+    suspended = "sus2";
+  }
+
+  // a suspended chord has no third to name; a third of 4 semitones is major, and has no letter
+  let quality = "";
+  if (!suspended) {
+    const third = interval(3);
+    if (third !== 4) {
+      quality = "m";
+    }
+  }
+
+  const seventh = interval(7);
+  const major7 = seventh === 11 ? "maj" : "";
+
+  let extension = "";
+  if (chord.type !== 5) {
+    extension = major7 + chord.type;
+  }
+
+  let addedNames = "";
+  for (const added of chord.adds || []) {
+    addedNames += `(add${added})`;
+  }
+
+  let slashBass = "";
+  if (bass !== root) {
+    slashBass = "/" + NAMES[bass];
+  }
+
+  return NAMES[root] + quality + extension + suspended + addedNames + slashBass;
 }
 
 /** A MIDI pitch as a name: 60 -> "C4". */
-export const noteName = (midi) => NAMES[midi % 12] + (Math.floor(midi / 12) - 1);
+export function noteName(midi) {
+  const name = NAMES[midi % 12];
+  const octave = Math.floor(midi / 12) - 1;
+  return name + octave;
+}

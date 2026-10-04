@@ -15,12 +15,13 @@ const JA_TAIL_MAX_CHARS = 3;
 /** Whether a character is kana, a CJK ideograph or half-width katakana (adapter is_ja_char). */
 export function isJaChar(ch) {
   const code = ch.codePointAt(0);
-  return (
-    (code >= 0x3040 && code <= 0x30ff) ||
-    (code >= 0x3400 && code <= 0x9fff) ||
-    (code >= 0xff66 && code <= 0xff9f) ||
-    (code >= 0x20000 && code <= 0x2ffff)
-  );
+
+  const isKana = code >= 0x3040 && code <= 0x30ff;
+  const isIdeograph = code >= 0x3400 && code <= 0x9fff;
+  const isHalfWidthKatakana = code >= 0xff66 && code <= 0xff9f;
+  const isRareIdeograph = code >= 0x20000 && code <= 0x2ffff;
+
+  return isKana || isIdeograph || isHalfWidthKatakana || isRareIdeograph;
 }
 
 /**
@@ -31,16 +32,31 @@ export function isJaChar(ch) {
 export function detectLang(text) {
   const chars = Array.from(text);
   const letters = chars.filter((ch) => /\p{L}/u.test(ch));
-  if (letters.length === 0) return chars.some(isJaChar) ? "ja" : "en";
-  const japanese = letters.filter(isJaChar).length;
-  return japanese / letters.length > 0.3 ? "ja" : "en";
+
+  if (letters.length === 0) {
+    const hasJapanese = chars.some(isJaChar);
+    return hasJapanese ? "ja" : "en";
+  }
+
+  const japaneseLetters = letters.filter(isJaChar);
+  const japanese = japaneseLetters.length;
+  const japaneseShare = japanese / letters.length;
+  return japaneseShare > 0.3 ? "ja" : "en";
 }
 
 /** The range [start, end) without the white space at either side; null when nothing is left. */
 function trimmedRange(text, start, end) {
-  while (start < end && /\s/.test(text[start])) start++;
-  while (end > start && /\s/.test(text[end - 1])) end--;
-  return start < end ? [start, end] : null;
+  while (start < end && /\s/.test(text[start])) {
+    start++;
+  }
+  while (end > start && /\s/.test(text[end - 1])) {
+    end--;
+  }
+
+  if (start < end) {
+    return [start, end];
+  }
+  return null;
 }
 
 /**
@@ -52,38 +68,57 @@ function trimmedRange(text, start, end) {
  */
 export function jaRanges(text) {
   const ranges = [];
-  let start = 0,
-    depth = 0; // depth: how many brackets are open
+  let start = 0;
+  // depth: how many brackets are open
+  let depth = 0;
+
   // end the sentence that started at `start` just before `end`
   const cutAt = (end) => {
     const range = trimmedRange(text, start, end);
-    if (range) ranges.push(range);
+    if (range) {
+      ranges.push(range);
+    }
     start = end;
   };
+
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (JA_OPEN.includes(ch)) depth++;
-    else if (JA_CLOSE.includes(ch)) depth = Math.max(0, depth - 1);
+
+    if (JA_OPEN.includes(ch)) {
+      depth++;
+    } else if (JA_CLOSE.includes(ch)) {
+      depth = Math.max(0, depth - 1);
+    }
+
     if (JA_END.includes(ch) && depth === 0) {
-      while (
-        i + 1 < text.length &&
-        (JA_END.includes(text[i + 1]) || JA_CLOSE.includes(text[i + 1]))
-      )
+      while (i + 1 < text.length) {
+        const next = text[i + 1];
+        const belongsToTheEnd = JA_END.includes(next) || JA_CLOSE.includes(next);
+        if (!belongsToTheEnd) {
+          break;
+        }
         i++;
+      }
       cutAt(i + 1);
-    } else if (
+    } else {
       // a 」 right after an end mark ends the sentence only when the sentence began with the
       // quote (「…。」 alone); 彼は「…。」と stays one sentence
-      "」』".includes(ch) &&
-      depth === 0 &&
-      i + 1 < text.length &&
-      i > 0 &&
-      JA_END.includes(text[i - 1]) &&
-      "「『".includes(text.slice(start, i + 1).trimStart()[0] ?? "")
-    ) {
-      cutAt(i + 1);
+      const closesQuote = "」』".includes(ch) && depth === 0;
+      const textFollows = i + 1 < text.length;
+      if (closesQuote && textFollows && i > 0) {
+        const comesAfterEndMark = JA_END.includes(text[i - 1]);
+        if (comesAfterEndMark) {
+          const sentenceSoFar = text.slice(start, i + 1);
+          const firstChar = sentenceSoFar.trimStart()[0] ?? "";
+          const beganWithQuote = "「『".includes(firstChar);
+          if (beganWithQuote) {
+            cutAt(i + 1);
+          }
+        }
+      }
     }
   }
+
   cutAt(text.length);
   return withTailsJoined(text, ranges);
 }
@@ -95,17 +130,28 @@ export function jaRanges(text) {
  */
 function withTailsJoined(text, ranges) {
   const merged = [];
+
   for (const range of ranges) {
     const sentence = text.slice(range[0], range[1]);
     const previous = merged[merged.length - 1];
-    const isTail =
-      previous &&
-      sentence.length <= JA_TAIL_MAX_CHARS &&
-      !Array.from(sentence).some((ch) => JA_END.includes(ch)) &&
-      JA_CLOSE.includes(text[previous[1] - 1]);
-    if (isTail) previous[1] = range[1];
-    else merged.push(range.slice());
+
+    let isTail = false;
+    if (previous && sentence.length <= JA_TAIL_MAX_CHARS) {
+      const sentenceChars = Array.from(sentence);
+      const hasEndMark = sentenceChars.some((ch) => JA_END.includes(ch));
+      if (!hasEndMark) {
+        const lastOfPrevious = text[previous[1] - 1];
+        isTail = JA_CLOSE.includes(lastOfPrevious);
+      }
+    }
+
+    if (isTail) {
+      previous[1] = range[1];
+    } else {
+      merged.push(range.slice());
+    }
   }
+
   return merged;
 }
 
@@ -128,26 +174,49 @@ const EN_BREAK = /([.!?]+["'”’)\]]*)(\s+)(?=["'“‘(\[]?[A-Z0-9])/g;
 export function enRanges(text) {
   const ranges = [];
   let start = 0;
+
   for (const match of text.matchAll(EN_BREAK)) {
     const endMark = match[1];
-    const words = text.slice(start, match.index).trim().split(/\s+/).filter(Boolean);
-    const lastWord = words.length
-      ? words[words.length - 1].toLowerCase().replace(/^["'(“‘]+|["'(“‘]+$/g, "")
-      : "";
+
+    // the word before the mark, in lower case, without the quotes and brackets around it
+    const sentenceSoFar = text.slice(start, match.index).trim();
+    const pieces = sentenceSoFar.split(/\s+/);
+    const words = pieces.filter(Boolean);
+    let lastWord = "";
+    if (words.length) {
+      const lowered = words[words.length - 1].toLowerCase();
+      lastWord = lowered.replace(/^["'(“‘]+|["'(“‘]+$/g, "");
+    }
+
     const isInitial = lastWord.length === 1 && /\p{L}/u.test(lastWord);
-    if (endMark.startsWith(".") && (EN_ABBR.has(lastWord) || isInitial)) continue;
-    const range = trimmedRange(text, start, match.index + endMark.length);
-    if (range) ranges.push(range);
+    if (endMark.startsWith(".")) {
+      const isAbbreviation = EN_ABBR.has(lastWord);
+      if (isAbbreviation || isInitial) {
+        continue;
+      }
+    }
+
+    const sentenceEnd = match.index + endMark.length;
+    const range = trimmedRange(text, start, sentenceEnd);
+    if (range) {
+      ranges.push(range);
+    }
     start = match.index + match[0].length;
   }
+
   const tail = trimmedRange(text, start, text.length);
-  if (tail) ranges.push(tail);
+  if (tail) {
+    ranges.push(tail);
+  }
   return ranges;
 }
 
 /** The sentences of a text as offset ranges [start, end), by the rules of its language. */
 export function sentenceRanges(text, lang) {
-  return lang === "ja" ? jaRanges(text) : enRanges(text);
+  if (lang === "ja") {
+    return jaRanges(text);
+  }
+  return enRanges(text);
 }
 
 /**
@@ -156,12 +225,14 @@ export function sentenceRanges(text, lang) {
  *     splitSentences("彼は「行くぞ。」と言った。次。", "ja") // ["彼は「行くぞ。」と言った。", "次。"]
  */
 export function splitSentences(text, lang) {
-  return sentenceRanges(text, lang).map(([start, end]) => text.slice(start, end));
+  const ranges = sentenceRanges(text, lang);
+  return ranges.map(([start, end]) => text.slice(start, end));
 }
 
 /** Whether a line has nothing but white space (the full-width space included). */
 export function isBlank(line) {
-  return !line.replace(/[\s　]/g, "");
+  const withoutSpaces = line.replace(/[\s　]/g, "");
+  return !withoutSpaces;
 }
 
 /** Whether a line ends a sentence: 。！？」』.!?" or a closing bracket, after any spaces (§5.2). */
@@ -178,25 +249,43 @@ export function endsSentence(line) {
  */
 export function joinLines(lines, lang) {
   let joined = "";
+
   for (const raw of lines) {
     const line = raw.trim();
-    if (!line) continue;
-    if (!joined) joined = line;
-    else if (
-      lang === "ja" &&
-      (isJaChar(joined[joined.length - 1]) ||
-        isJaChar(line[0]) ||
-        "。、」』）！？".includes(joined[joined.length - 1]))
-    )
+    if (!line) {
+      continue;
+    }
+
+    if (!joined) {
+      joined = line;
+      continue;
+    }
+
+    const lastChar = joined[joined.length - 1];
+
+    let joinsAsJapanese = false;
+    if (lang === "ja") {
+      const japaneseAtJoin = isJaChar(lastChar) || isJaChar(line[0]);
+      joinsAsJapanese = japaneseAtJoin || "。、」』）！？".includes(lastChar);
+    }
+    if (joinsAsJapanese) {
       joined += line;
-    else if (
-      joined.endsWith("-") &&
-      joined.length > 1 &&
-      /\p{L}/u.test(joined[joined.length - 2]) &&
-      /\p{Ll}/u.test(line[0])
-    )
-      joined = joined.slice(0, -1) + line;
-    else joined += " " + line;
+      continue;
+    }
+
+    let hyphenated = false;
+    if (joined.endsWith("-") && joined.length > 1) {
+      const beforeHyphen = joined[joined.length - 2];
+      hyphenated = /\p{L}/u.test(beforeHyphen) && /\p{Ll}/u.test(line[0]);
+    }
+    if (hyphenated) {
+      const withoutHyphen = joined.slice(0, -1);
+      joined = withoutHyphen + line;
+      continue;
+    }
+
+    joined += " " + line;
   }
+
   return joined;
 }

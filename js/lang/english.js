@@ -27,27 +27,44 @@ const INDEFINITE_PRONOUNS = new Set([
  * their terms. A term of no length (the "not" inside don't) is left out.
  */
 export function termsOf(nlp, speech) {
-  return nlp(speech)
-    .json({ offset: true })
-    .flatMap((sentence) => sentence.terms)
-    .filter((term) => term.offset.length > 0)
-    .map((term) => ({
-      start: term.offset.start,
-      end: term.offset.start + term.offset.length,
+  const tagged = nlp(speech);
+  const sentences = tagged.json({ offset: true });
+  const allTerms = sentences.flatMap((sentence) => sentence.terms);
+  const termsWithLength = allTerms.filter((term) => term.offset.length > 0);
+
+  return termsWithLength.map((term) => {
+    const start = term.offset.start;
+    const end = start + term.offset.length;
+
+    return {
+      start,
+      end,
       tags: term.tags,
-    }));
+    };
+  });
 }
 
 /** Whether a tagged word is a target word on its own. */
 function isTargetWord(speech, term) {
   const word = speech.slice(term.start, term.end);
-  return (
-    term.tags.includes("Noun") &&
-    !term.tags.includes("Pronoun") &&
-    !term.tags.includes("Value") && // a numeral
-    !INDEFINITE_PRONOUNS.has(word.toLowerCase()) &&
-    /[A-Za-z]/.test(word)
-  );
+
+  if (!term.tags.includes("Noun")) {
+    return false;
+  }
+  if (term.tags.includes("Pronoun")) {
+    return false;
+  }
+  // a numeral
+  if (term.tags.includes("Value")) {
+    return false;
+  }
+
+  const lowerCase = word.toLowerCase();
+  if (INDEFINITE_PRONOUNS.has(lowerCase)) {
+    return false;
+  }
+
+  return /[A-Za-z]/.test(word);
 }
 
 /**
@@ -59,21 +76,38 @@ function isTargetWord(speech, term) {
 export function englishTargets(speech, terms) {
   const targets = [];
   let run = null; // the target being gathered: { start, end }
+
   for (const term of terms) {
     if (!isTargetWord(speech, term)) {
       run = null;
       continue;
     }
-    if (run && !speech.slice(run.end, term.start).trim()) run.end = term.end;
-    else {
-      run = { start: term.start, end: term.end };
+
+    let onlySpacesSinceRun = false;
+    if (run) {
+      const sinceRun = speech.slice(run.end, term.start);
+      onlySpacesSinceRun = !sinceRun.trim();
+    }
+
+    if (onlySpacesSinceRun) {
+      run.end = term.end;
+    } else {
+      run = {
+        start: term.start,
+        end: term.end,
+      };
       targets.push(run);
     }
   }
-  return targets.map(({ start, end }) => ({
-    start,
-    end,
-    text: speech.slice(start, end),
-    lang: "en",
-  }));
+
+  return targets.map(({ start, end }) => {
+    const text = speech.slice(start, end);
+
+    return {
+      start,
+      end,
+      text,
+      lang: "en",
+    };
+  });
 }

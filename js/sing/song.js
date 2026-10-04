@@ -8,10 +8,16 @@ import { parseFragments } from "./melody.js";
 const DAYLIFE_DIR = "data/sing/daylife/";
 const SCORE_FILES = 5; // the fragments and the four files of the score
 
-const fetchText = async (path) => (await fetch(path)).text();
+const fetchText = async (path) => {
+  const response = await fetch(path);
+  return response.text();
+};
+
 const fetchJson = async (path) => {
   const response = await fetch(path);
-  if (!response.ok) throw new Error(`${path}: ${response.status}`);
+  if (!response.ok) {
+    throw new Error(`${path}: ${response.status}`);
+  }
   return response.json();
 };
 
@@ -27,28 +33,53 @@ export async function loadSong() {
   let arrived = 0;
   const counted = async (file) => {
     const got = await file;
-    progress.count("score", ++arrived, SCORE_FILES);
+    ++arrived;
+    progress.count("score", arrived, SCORE_FILES);
     return got;
   };
   progress.count("score", 0, SCORE_FILES);
-  const fragments = parseFragments(await counted(fetchText("data/sing/fragments.txt")));
-  for (const line of fragments.skipped) console.warn(`fragments.txt: not understood: ${line}`);
-  return songOf(
-    {
-      chords: await counted(fetchJson(DAYLIFE_DIR + "chords.json")),
-      form: await counted(fetchJson(DAYLIFE_DIR + "form.json")),
-      tempo: await counted(fetchJson(DAYLIFE_DIR + "tempo.json")),
-      notes: await counted(fetchJson(DAYLIFE_DIR + "notes.json")),
-    },
-    fragments.fragments,
-  );
+
+  const fragmentsFile = fetchText("data/sing/fragments.txt");
+  const fragmentsText = await counted(fragmentsFile);
+  const fragments = parseFragments(fragmentsText);
+
+  for (const line of fragments.skipped) {
+    console.warn(`fragments.txt: not understood: ${line}`);
+  }
+
+  // each file of the score is asked for when the one before it has arrived
+  const chordsFile = fetchJson(DAYLIFE_DIR + "chords.json");
+  const chords = await counted(chordsFile);
+
+  const formFile = fetchJson(DAYLIFE_DIR + "form.json");
+  const form = await counted(formFile);
+
+  const tempoFile = fetchJson(DAYLIFE_DIR + "tempo.json");
+  const tempo = await counted(tempoFile);
+
+  const notesFile = fetchJson(DAYLIFE_DIR + "notes.json");
+  const notes = await counted(notesFile);
+
+  const scoreFiles = {
+    chords,
+    form,
+    tempo,
+    notes,
+  };
+  return songOf(scoreFiles, fragments.fragments);
 }
 
 /** The song from the four files of the Day Life data (as loadSong fetches them) and the parsed
  * fragments. */
 export function songOf({ chords, form, tempo, notes }, fragments) {
+  const daylife = {
+    name: "daylife",
+    data: chords,
+    form,
+  };
+
   return {
-    progressions: [{ name: "daylife", data: chords, form }],
+    progressions: [daylife],
     fragments,
     notes,
     tempo,

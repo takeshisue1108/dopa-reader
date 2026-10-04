@@ -11,43 +11,102 @@ export const KINDS = ["A", "B", "C", "S"];
 export function parseFragments(text) {
   const byKind = { A: [], B: [], C: [], S: [] };
   const skipped = [];
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.replace(/#.*/, "").trim();
-    if (!line) continue;
+
+  const rawLines = text.split("\n");
+  for (const rawLine of rawLines) {
+    const withoutComment = rawLine.replace(/#.*/, "");
+    const line = withoutComment.trim();
+    if (!line) {
+      continue;
+    }
+
     const match = line.match(/^([ABCS])\s+\[?([0-9-]{8})\]?$/);
     if (!match) {
       skipped.push(rawLine);
       continue;
     }
+    const kind = match[1];
+    const pattern = match[2];
+
     // the fragment's rests are not used (D-19)
-    const steps = [...match[2]].filter((char) => char !== "-").map(Number);
-    if (steps.length) byKind[match[1]].push({ kind: match[1], pattern: match[2], steps });
-    else skipped.push(rawLine);
+    const steps = [];
+    for (const char of pattern) {
+      if (char !== "-") {
+        const step = Number(char);
+        steps.push(step);
+      }
+    }
+
+    if (steps.length) {
+      const fragment = {
+        kind,
+        pattern,
+        steps,
+      };
+      byKind[kind].push(fragment);
+    } else {
+      skipped.push(rawLine);
+    }
   }
+
   // a kind with no fragment uses A's
-  for (const kind of KINDS) if (!byKind[kind].length) byKind[kind] = byKind.A;
-  return { fragments: byKind, skipped };
+  for (const kind of KINDS) {
+    if (!byKind[kind].length) {
+      byKind[kind] = byKind.A;
+    }
+  }
+
+  return {
+    fragments: byKind,
+    skipped,
+  };
 }
 
 /** The kind of a bar (0-based) from the progression's form; without a form, blocks of 4 bars: A,
  * A, B, S. */
 export function kindAt(form, barIndex) {
-  if (!form || !form.sections || !form.sections.length)
-    return ["A", "A", "B", "S"][Math.floor(barIndex / 4) % 4];
+  if (!form || !form.sections || !form.sections.length) {
+    const block = Math.floor(barIndex / 4);
+    return ["A", "A", "B", "S"][block % 4];
+  }
+
+  // the last section that starts at or before the bar; a section's `bar` is counted from 1
   let kind = form.sections[0].kind;
-  for (const section of form.sections) if (section.bar - 1 <= barIndex) kind = section.kind;
+  for (const section of form.sections) {
+    const sectionStart = section.bar - 1;
+    if (sectionStart <= barIndex) {
+      kind = section.kind;
+    }
+  }
+
   return kind;
 }
 
 /** One fragment of the kind at random, never the one of the bar before when there is another
  * (D-10). A kind with no fragment takes A's. */
 export function pick(fragments, kind, previous, random = Math.random) {
-  const list = fragments[kind] && fragments[kind].length ? fragments[kind] : fragments.A;
-  const pool = list.length > 1 ? list.filter((fragment) => fragment !== previous) : list;
-  return pool[Math.floor(random() * pool.length)];
+  let list = fragments.A;
+  if (fragments[kind] && fragments[kind].length) {
+    list = fragments[kind];
+  }
+
+  let pool = list;
+  if (list.length > 1) {
+    pool = list.filter((fragment) => fragment !== previous);
+  }
+
+  const chance = random();
+  const place = Math.floor(chance * pool.length);
+  return pool[place];
 }
 
 /** The step of each sung slot: the fragment's steps in order, starting again when they run out
  * (D-19). */
-export const stepsFor = (fragment, sungCount) =>
-  Array.from({ length: sungCount }, (_, slot) => fragment.steps[slot % fragment.steps.length]);
+export function stepsFor(fragment, sungCount) {
+  const stepOfSlot = (_, slot) => {
+    const place = slot % fragment.steps.length;
+    return fragment.steps[place];
+  };
+
+  return Array.from({ length: sungCount }, stepOfSlot);
+}

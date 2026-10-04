@@ -81,15 +81,22 @@ const R_AS_A = new Set(["ɛ", "ɪ", "ʊ"]); // the vowels after which ɹ is sung
 export function kanaOfIpa(pronunciation) {
   const phonemes = phonemesOf(pronunciation);
   let kana = "";
+
   for (let at = 0; at < phonemes.length; at++) {
     const { ipa, vowel } = phonemes[at];
+
     if (vowel) {
-      kana += ALONE[VOWEL[ipa][0]] + VOWEL[ipa][1];
+      const [japanese, tail] = VOWEL[ipa];
+      kana += ALONE[japanese] + tail;
       continue;
     }
-    const next = phonemes[at + 1],
-      afterNext = phonemes[at + 2];
-    if (next && next.ipa === "j" && afterNext && afterNext.vowel && WITH_J[ipa]) {
+
+    const next = phonemes[at + 1];
+    const afterNext = phonemes[at + 2];
+
+    const jFollows = next && next.ipa === "j";
+    const vowelAfterJ = jFollows && afterNext && afterNext.vowel;
+    if (vowelAfterJ && WITH_J[ipa]) {
       const [japanese, tail] = VOWEL[afterNext.ipa];
       if (SMALL_Y[japanese]) {
         kana += WITH_J[ipa] + SMALL_Y[japanese] + tail;
@@ -97,44 +104,65 @@ export function kanaOfIpa(pronunciation) {
         continue;
       }
     }
+
     if (next && next.vowel) {
       const [japanese, tail] = VOWEL[next.ipa];
       kana += ROW[ipa][japanese] + tail;
       at += 1;
       continue;
     }
+
     // no vowel after it
     const previous = phonemes[at - 1];
+
     if (ipa === "ɹ") {
       // after a vowel: ア after ɛ, ɪ and ʊ (their: ゼア, year: イア), else the vowel is
       // lengthened, once (car: カー)
-      if (previous && R_AS_A.has(previous.ipa)) kana += "ア";
-      else if (previous && previous.vowel && !kana.endsWith("ー")) kana += "ー";
+      const afterVowel = previous && previous.vowel;
+      if (previous && R_AS_A.has(previous.ipa)) {
+        kana += "ア";
+      } else if (afterVowel && !kana.endsWith("ー")) {
+        kana += "ー";
+      }
       continue;
     }
-    if (ipa === "ŋ" && next && (next.ipa === "k" || next.ipa === "ɡ")) {
+
+    const kOrGFollows = next && (next.ipa === "k" || next.ipa === "ɡ");
+    if (ipa === "ŋ" && kOrGFollows) {
       kana += "ン"; // think: シンク, finger: フィンガー
       continue;
     }
+
     // t and s, d and z with no vowel after them are one kana (cats: キャッツ is カッツ here)
-    if ((ipa === "t" && next?.ipa === "s") || (ipa === "d" && next?.ipa === "z")) {
+    const tThenS = ipa === "t" && next?.ipa === "s";
+    const dThenZ = ipa === "d" && next?.ipa === "z";
+    if (tThenS || dThenZ) {
       if (!afterNext || !afterNext.vowel) {
         kana += ipa === "t" ? "ツ" : "ズ";
         at += 1;
         continue;
       }
     }
+
     const lastOfWord = at === phonemes.length - 1;
-    if (
-      lastOfWord &&
-      STOPS.has(ipa) &&
-      previous &&
-      previous.vowel &&
-      SHORT_STRESSED.has(previous.ipa) &&
-      (previous.stress || phonemes.filter((one) => one.vowel).length === 1)
-    )
-      kana += "ッ";
+    const endsInStop = lastOfWord && STOPS.has(ipa);
+    const afterShortVowel = previous && previous.vowel && SHORT_STRESSED.has(previous.ipa);
+
+    if (endsInStop && afterShortVowel) {
+      // a word with one vowel only has its stress there, marked or not
+      let stressed = previous.stress;
+      if (!stressed) {
+        const vowels = phonemes.filter((one) => one.vowel);
+        stressed = vowels.length === 1;
+      }
+
+      if (stressed) {
+        kana += "ッ";
+      }
+    }
+
     kana += ROW[ipa].none;
   }
+
   return kana;
 }

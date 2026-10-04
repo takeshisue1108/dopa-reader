@@ -22,16 +22,50 @@ const GROUP_UNITS = ["", "マン", "オク", "チョウ"]; // every 4 places
 const MAX_PLACES = 16; // more than this is read digit by digit
 
 /** Each digit on its own: "305" -> サンゼロゴ (decimals, and numbers of more than 16 places). */
-export const readDigits = (digits) => [...digits].map((d) => DIGIT_READINGS[+d]).join("");
+export function readDigits(digits) {
+  const characters = [...digits];
+  const readings = characters.map((d) => DIGIT_READINGS[+d]);
+  return readings.join("");
+}
 
 /** A group of up to four digits, 1 to 9999, without its 万 or 億. */
 function readGroup(value) {
-  const [thousands, hundreds, tens, ones] = String(value).padStart(4, "0").split("").map(Number);
+  const fourDigits = String(value).padStart(4, "0");
+  const characters = fourDigits.split("");
+  const [thousands, hundreds, tens, ones] = characters.map(Number);
+
   let reading = "";
-  if (thousands) reading += THOUSANDS[thousands] ?? DIGIT_READINGS[thousands] + "セン";
-  if (hundreds) reading += HUNDREDS[hundreds] ?? DIGIT_READINGS[hundreds] + "ヒャク";
-  if (tens) reading += (tens === 1 ? "" : DIGIT_READINGS[tens]) + "ジュウ";
-  if (ones) reading += DIGIT_READINGS[ones];
+
+  if (thousands) {
+    const withSoundChange = THOUSANDS[thousands];
+    if (withSoundChange !== undefined) {
+      reading += withSoundChange;
+    } else {
+      reading += DIGIT_READINGS[thousands] + "セン";
+    }
+  }
+
+  if (hundreds) {
+    const withSoundChange = HUNDREDS[hundreds];
+    if (withSoundChange !== undefined) {
+      reading += withSoundChange;
+    } else {
+      reading += DIGIT_READINGS[hundreds] + "ヒャク";
+    }
+  }
+
+  if (tens) {
+    // 十 is ジュウ alone, with no イチ before it
+    if (tens !== 1) {
+      reading += DIGIT_READINGS[tens];
+    }
+    reading += "ジュウ";
+  }
+
+  if (ones) {
+    reading += DIGIT_READINGS[ones];
+  }
+
   return reading;
 }
 
@@ -43,19 +77,35 @@ export function readNumber(number) {
   const [whole, decimals] = number.split(".");
   let reading;
   const digits = whole.replace(/^0+(?=\d)/, "");
-  if (digits.length > MAX_PLACES) reading = readDigits(whole);
-  else if (/^0*$/.test(digits)) reading = DIGIT_READINGS[0];
-  else {
+
+  if (digits.length > MAX_PLACES) {
+    reading = readDigits(whole);
+  } else if (/^0*$/.test(digits)) {
+    reading = DIGIT_READINGS[0];
+  } else {
     reading = "";
+
+    // the digits in groups of four, counted from the right
     const groups = [];
-    for (let end = digits.length; end > 0; end -= 4)
-      groups.unshift(digits.slice(Math.max(0, end - 4), end));
+    for (let end = digits.length; end > 0; end -= 4) {
+      const groupStart = Math.max(0, end - 4);
+      const group = digits.slice(groupStart, end);
+      groups.unshift(group);
+    }
+
     groups.forEach((group, i) => {
       const value = Number(group);
-      if (value) reading += readGroup(value) + GROUP_UNITS[groups.length - 1 - i];
+      if (value) {
+        const groupsAfter = groups.length - 1 - i;
+        reading += readGroup(value) + GROUP_UNITS[groupsAfter];
+      }
     });
   }
-  return decimals === undefined ? reading : reading + "テン" + readDigits(decimals);
+
+  if (decimals === undefined) {
+    return reading;
+  }
+  return reading + "テン" + readDigits(decimals);
 }
 
 // The few numbers whose counter changes the whole reading (§5.5 step 5): number + counter ->
@@ -64,12 +114,19 @@ const NUMBER_WITH_COUNTER = { "1日": "ツイタチ", "20日": "ハツカ", "4�
 
 /** The reading of a number and the counter after it when the pair has a reading of its own
  * (1日 ツイタチ, 20日 ハツカ, 4月 シガツ), else null. `number` is in ASCII digits. */
-export const readSpecial = (number, counter) =>
-  NUMBER_WITH_COUNTER[`${number.replace(/^0+(?=\d)/, "")}${counter}`] ?? null;
+export function readSpecial(number, counter) {
+  const withoutLeadingZeros = number.replace(/^0+(?=\d)/, "");
+  const pair = `${withoutLeadingZeros}${counter}`;
+  return NUMBER_WITH_COUNTER[pair] ?? null;
+}
 
 /** Full-width digits, commas and full stops as ASCII ("２０２２" -> "2022"); else unchanged. */
-export const asciiDigits = (text) =>
-  text.replace(/[０-９，．]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0));
+export function asciiDigits(text) {
+  return text.replace(/[０-９，．]/g, (char) => {
+    const asciiCode = char.charCodeAt(0) - 0xfee0;
+    return String.fromCharCode(asciiCode);
+  });
+}
 
 /**
  * The numbers written in digits in a run of digit characters, as [{ start, end, number }] with
@@ -80,12 +137,20 @@ export const asciiDigits = (text) =>
 export function numbersIn(run) {
   const ascii = asciiDigits(run);
   const found = [];
-  for (const match of ascii.matchAll(/\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g))
-    found.push({
+
+  const matches = ascii.matchAll(/\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g);
+  for (const match of matches) {
+    const written = match[0];
+    const number = written.replaceAll(",", "");
+
+    const oneNumber = {
       start: match.index,
-      end: match.index + match[0].length,
-      number: match[0].replaceAll(",", ""),
-    });
+      end: match.index + written.length,
+      number,
+    };
+    found.push(oneNumber);
+  }
+
   return found;
 }
 
@@ -102,25 +167,46 @@ export const KANJI_NUMERAL = /^[〇一二三四五六七八九十百千万億兆
  * number, and give null.
  */
 export function kanjiNumber(text) {
-  if (!KANJI_NUMERAL.test(text)) return null;
+  if (!KANJI_NUMERAL.test(text)) {
+    return null;
+  }
+
   const hasUnit = /[十百千万億兆]/.test(text);
-  if (!hasUnit) return text.includes("〇") ? [...text].map((c) => KANJI_DIGIT[c]).join("") : null;
-  let total = 0n, // what the large units (万, 億, 兆) have closed
-    section = 0n, // below the next large unit
-    digit = null; // a numeral still waiting for its unit
+  if (!hasUnit) {
+    if (!text.includes("〇")) {
+      return null;
+    }
+    const numerals = [...text];
+    const digits = numerals.map((c) => KANJI_DIGIT[c]);
+    return digits.join("");
+  }
+
+  let total = 0n; // what the large units (万, 億, 兆) have closed
+  let section = 0n; // below the next large unit
+  let digit = null; // a numeral still waiting for its unit
+
   for (const char of text) {
     if (char in KANJI_DIGIT) {
-      if (digit !== null) return null; // two numerals in a row
+      if (digit !== null) {
+        return null; // two numerals in a row
+      }
       digit = BigInt(KANJI_DIGIT[char]);
     } else if (char in KANJI_SMALL_UNIT) {
-      section += (digit ?? 1n) * BigInt(KANJI_SMALL_UNIT[char]);
+      const howMany = digit ?? 1n;
+      const unit = BigInt(KANJI_SMALL_UNIT[char]);
+      section += howMany * unit;
       digit = null;
     } else {
       // a large unit with nothing before it counts one of it: 万 alone is 一万
-      total += (section + (digit ?? 0n) || 1n) * BigInt(KANJI_LARGE_UNIT[char]);
+      const belowUnit = section + (digit ?? 0n);
+      const howMany = belowUnit || 1n;
+      const unit = BigInt(KANJI_LARGE_UNIT[char]);
+      total += howMany * unit;
       section = 0n;
       digit = null;
     }
   }
-  return String(total + section + (digit ?? 0n));
+
+  const lastDigit = digit ?? 0n;
+  return String(total + section + lastDigit);
 }

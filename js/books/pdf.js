@@ -32,13 +32,15 @@ import { detectLang, isJaChar } from "./sentences.js";
 export const NO_TEXT = "この PDF には文字が入っていません";
 
 const MIN_CHARS_PER_PAGE = 20;
-const HEAD_BAND = 0.08; // the top and bottom bands of a page, where running heads and numbers sit
+// the top and bottom bands of a page, where running heads and numbers sit
+const HEAD_BAND = 0.08;
 const BLOCK_GAP_FACTOR = 1.5;
 const SHORT_LINE_RATIO = 0.8;
 // One character of indent. A Japanese paragraph is indented by exactly one em, so the measure
 // allows for rounding: an indent of 90% of a character width or more counts.
 const MIN_INDENT_CHARS = 0.9;
-const LABEL_MAX_CHARS = 24; // §6.7: a PDF figure's label is its line cut at 24 characters
+// §6.7: a PDF figure's label is its line cut at 24 characters
+const LABEL_MAX_CHARS = 24;
 
 const SENTENCE_END = /[。．！？.!?][」』）)\]］】〕〉》"”’']*$/;
 const FIGURE_LINE =
@@ -58,13 +60,20 @@ export function normalizeText(text) {
 
 /** Whether a line ends with a sentence end (。．！？.!?, then any closing brackets or quotes). */
 export function endsSentencePdf(text) {
-  return SENTENCE_END.test(text.trimEnd());
+  const withoutSpaceAtEnd = text.trimEnd();
+  return SENTENCE_END.test(withoutSpaceAtEnd);
 }
 
 /** Whether a line reads as a chapter heading, for a PDF without an outline (§5.2 PDF step 5): it
  * starts with 「第N章」「第N話」「第N部」「Chapter N」 or 「CHAPTER N」 and is shorter than 40 characters. */
 export function isChapterLine(line) {
-  return CHAPTER_LINE.test(line) && Array.from(line.trim()).length < 40;
+  if (!CHAPTER_LINE.test(line)) {
+    return false;
+  }
+
+  const trimmed = line.trim();
+  const characters = Array.from(trimmed);
+  return characters.length < 40;
 }
 
 /** Whether a line marks a figure (§5.2 step 6). */
@@ -73,10 +82,21 @@ export function isFigureLine(text) {
 }
 
 const median = (values) => {
-  if (!values.length) return NaN;
-  const sorted = [...values].sort((a, b) => a - b);
+  if (!values.length) {
+    return NaN;
+  }
+
+  const sorted = [...values];
+  sorted.sort((a, b) => a - b);
+
   const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const countIsOdd = sorted.length % 2;
+  if (countIsOdd) {
+    return sorted[mid];
+  }
+
+  const sumOfMiddleTwo = sorted[mid - 1] + sorted[mid];
+  return sumOfMiddleTwo / 2;
 };
 
 // ------------------------------------------------------------------ lines (step 2)
@@ -90,33 +110,84 @@ const median = (values) => {
 function turnStackedGlyphs(runs) {
   // stacked: at nearly the same x (within 0.3 of a character) and between half a character and
   // two characters above or below
-  const stacked = (run, other) =>
-    other &&
-    !other.vertical &&
-    Math.abs(other.x - run.x) < 0.3 * run.size &&
-    Math.abs(other.y - run.y) > 0.5 * run.size &&
-    Math.abs(other.y - run.y) < 2 * run.size;
+  const stacked = (run, other) => {
+    if (!other) {
+      return other;
+    }
+    if (other.vertical) {
+      return false;
+    }
+
+    const xDistance = Math.abs(other.x - run.x);
+    const atSameX = xDistance < 0.3 * run.size;
+    if (!atSameX) {
+      return false;
+    }
+
+    const yDistance = Math.abs(other.y - run.y);
+    return yDistance > 0.5 * run.size && yDistance < 2 * run.size;
+  };
+
   // beside: on nearly the same baseline (within 0.3 of a character), and its near edge within
   // one character of the run's left or right end
-  const beside = (run, other) =>
-    other &&
-    Math.abs(other.y - run.y) < 0.3 * run.size &&
-    (Math.abs(other.x - (run.x + run.width)) < run.size ||
-      Math.abs(run.x - (other.x + other.width)) < run.size);
+  const beside = (run, other) => {
+    if (!other) {
+      return other;
+    }
+
+    const baselineDistance = Math.abs(other.y - run.y);
+    const onSameBaseline = baselineDistance < 0.3 * run.size;
+    if (!onSameBaseline) {
+      return false;
+    }
+
+    const runRightEnd = run.x + run.width;
+    const gapAtRight = Math.abs(other.x - runRightEnd);
+    if (gapAtRight < run.size) {
+      return true;
+    }
+
+    const otherRightEnd = other.x + other.width;
+    const gapAtLeft = Math.abs(run.x - otherRightEnd);
+    return gapAtLeft < run.size;
+  };
+
   runs.forEach((run, i) => {
-    if (run.vertical || Array.from(run.str.trim()).length !== 1) return;
-    const before = runs[i - 1],
-      after = runs[i + 1];
-    if (
-      (stacked(run, before) || stacked(run, after)) &&
-      !beside(run, before) &&
-      !beside(run, after)
-    )
-      run.kind = "glyph";
+    if (run.vertical) {
+      return;
+    }
+    const glyphs = Array.from(run.str.trim());
+    if (glyphs.length !== 1) {
+      return;
+    }
+
+    const before = runs[i - 1];
+    const after = runs[i + 1];
+
+    const isStacked = stacked(run, before) || stacked(run, after);
+    if (!isStacked) {
+      return;
+    }
+    if (beside(run, before)) {
+      return;
+    }
+    if (beside(run, after)) {
+      return;
+    }
+
+    run.kind = "glyph";
   });
-  for (const run of runs)
-    if (run.kind === "glyph")
-      Object.assign(run, { vertical: true, top: run.y - run.size, bottom: run.y });
+
+  for (const run of runs) {
+    if (run.kind === "glyph") {
+      const asVerticalRun = {
+        vertical: true,
+        top: run.y - run.size,
+        bottom: run.y,
+      };
+      Object.assign(run, asVerticalRun);
+    }
+  }
 }
 
 /**
@@ -125,21 +196,37 @@ function turnStackedGlyphs(runs) {
  */
 function runsOf(page) {
   const [x0, y0, x1, y1] = page.view ?? [0, 0, page.width, page.height];
-  const items = page.items
-    .map((item) => ({ ...item, str: normalizeText(item.str ?? "") }))
-    .filter((item) => item.str.trim());
+
+  // the items that have text, with their text normalized
+  const items = [];
+  for (const item of page.items) {
+    const str = normalizeText(item.str ?? "");
+    const normalized = {
+      ...item,
+      str,
+    };
+    if (normalized.str.trim()) {
+      items.push(normalized);
+    }
+  }
+
   const runs = items.map((item) => {
     // the item's matrix: (e, f) is its origin on the page; b is not 0 when the text is turned
     const [a, b, c, d, e, f] = item.transform;
-    const scaleX = Math.hypot(a, b),
-      scaleY = Math.hypot(c, d);
+    const scaleX = Math.hypot(a, b);
+    const scaleY = Math.hypot(c, d);
     const rotated = Math.abs(b) > Math.abs(a);
+
     // the library gives the font size as the height of horizontal text; of a vertical font the
     // height is the advance down the column, so there the size comes from the matrix
-    const size =
-      Math.abs(item.height) > 0 && !item.vertical
-        ? Math.abs(item.height)
-        : Math.max(scaleX, scaleY);
+    let size;
+    const heightIsFontSize = Math.abs(item.height) > 0 && !item.vertical;
+    if (heightIsFontSize) {
+      size = Math.abs(item.height);
+    } else {
+      size = Math.max(scaleX, scaleY);
+    }
+
     const run = {
       str: item.str.trim(),
       x: e - x0,
@@ -151,37 +238,64 @@ function runsOf(page) {
     };
     // leading spaces drawn as glyphs indent the text: an em for a full-width space, a quarter else
     const leadingSpaces = item.str.match(/^\s*/)[0];
-    const leadShift =
-      Array.from(leadingSpaces).reduce((sum, ch) => sum + (ch === "　" ? 1 : 0.25), 0) * size;
+    let leadInChars = 0;
+    for (const ch of Array.from(leadingSpaces)) {
+      const spaceInChars = ch === "　" ? 1 : 0.25;
+      leadInChars = leadInChars + spaceInChars;
+    }
+    const leadShift = leadInChars * size;
+
     if (item.vertical) {
       // a vertical font: the item's origin is its top, and its height is its advance down the
       // column
-      Object.assign(run, {
+      const advance = Math.abs(item.height);
+      const asFontColumn = {
         vertical: true,
         kind: "font",
         top: run.y + leadShift,
-        bottom: run.y + Math.abs(item.height),
+        bottom: run.y + advance,
         size: scaleX,
-      });
+      };
+      Object.assign(run, asFontColumn);
     } else if (rotated) {
       // text turned by a quarter: it runs down the page (b < 0) or up. Text that runs up is
       // still joined top to bottom: its reading order is not followed
       const length = Math.abs(item.width);
-      Object.assign(run, {
+
+      let topBeforeLead;
+      let bottom;
+      if (b < 0) {
+        topBeforeLead = run.y;
+        bottom = run.y + length;
+      } else {
+        topBeforeLead = run.y - length;
+        bottom = run.y;
+      }
+
+      const asTurnedText = {
         vertical: true,
         kind: "rotated",
-        top: (b < 0 ? run.y : run.y - length) + leadShift,
-        bottom: b < 0 ? run.y + length : run.y,
+        top: topBeforeLead + leadShift,
+        bottom,
         size: scaleX,
-      });
+      };
+      Object.assign(run, asTurnedText);
     } else {
       run.x += leadShift;
-      run.width = Math.max(0, run.width - leadShift);
+      const widthAfterLead = run.width - leadShift;
+      run.width = Math.max(0, widthAfterLead);
     }
+
     return run;
   });
+
   turnStackedGlyphs(runs);
-  return { runs, width: x1 - x0, height: y1 - y0 };
+
+  return {
+    runs,
+    width: x1 - x0,
+    height: y1 - y0,
+  };
 }
 
 /**
@@ -191,41 +305,84 @@ function runsOf(page) {
  */
 function joinPieces(pieces, gapOf) {
   let text = "";
+
   pieces.forEach((piece, i) => {
     const str = piece.str;
+
     if (i && text) {
       const gap = gapOf(pieces[i - 1], piece);
       const japanese = isJaChar(text[text.length - 1]) || isJaChar(str[0]);
-      if (japanese && gap >= 0.5 * piece.size) text += "　";
-      else if (!japanese && gap > 0.25 * piece.size) text += " ";
+
+      if (japanese) {
+        if (gap >= 0.5 * piece.size) {
+          text += "　";
+        }
+      } else if (gap > 0.25 * piece.size) {
+        text += " ";
+      }
     }
+
     text += str;
   });
-  return text.replace(/[ \t\r\n]+/g, " ").trim();
+
+  const singleSpaced = text.replace(/[ \t\r\n]+/g, " ");
+  return singleSpaced.trim();
 }
 
 /** The horizontal lines of a page, top to bottom: runs within half the larger font size of a
  * line's baseline join it, and are joined left to right. */
 function rowLinesOf(runs, pageNumber) {
   const rowLines = [];
-  const horizontal = runs.filter((run) => !run.vertical).sort((p, q) => p.y - q.y || p.x - q.x);
+
+  // the horizontal runs, top to bottom, and left to right on one baseline
+  const horizontal = runs.filter((run) => !run.vertical);
+  horizontal.sort((p, q) => {
+    const byBaseline = p.y - q.y;
+    if (byBaseline) {
+      return byBaseline;
+    }
+    return p.x - q.x;
+  });
+
   const rows = [];
   for (const run of horizontal) {
-    const row = rows.find(
-      (candidate) => Math.abs(candidate.y - run.y) <= 0.5 * Math.max(candidate.size, run.size),
-    );
+    const row = rows.find((candidate) => {
+      const baselineDistance = Math.abs(candidate.y - run.y);
+      const largerSize = Math.max(candidate.size, run.size);
+      return baselineDistance <= 0.5 * largerSize;
+    });
+
     if (row) {
       row.runs.push(run);
       row.size = Math.max(row.size, run.size);
-    } else rows.push({ y: run.y, size: run.size, runs: [run] });
+    } else {
+      const newRow = {
+        y: run.y,
+        size: run.size,
+        runs: [run],
+      };
+      rows.push(newRow);
+    }
   }
+
   for (const row of rows) {
     row.runs.sort((p, q) => p.x - q.x);
-    const text = joinPieces(row.runs, (p, q) => q.x - (p.x + p.width));
-    if (!text) continue;
-    const start = row.runs[0].x,
-      end = Math.max(...row.runs.map((run) => run.x + run.width));
-    rowLines.push({
+
+    // the gap from the right end of one run to the start of the next
+    const gapBetween = (p, q) => {
+      const rightEndOfP = p.x + p.width;
+      return q.x - rightEndOfP;
+    };
+    const text = joinPieces(row.runs, gapBetween);
+    if (!text) {
+      continue;
+    }
+
+    const start = row.runs[0].x;
+    const rightEnds = row.runs.map((run) => run.x + run.width);
+    const end = Math.max(...rightEnds);
+
+    const rowLine = {
       text,
       page: pageNumber,
       vertical: false,
@@ -235,8 +392,10 @@ function rowLinesOf(runs, pageNumber) {
       size: row.size,
       top: row.y - row.size,
       bottom: row.y,
-    });
+    };
+    rowLines.push(rowLine);
   }
+
   return rowLines;
 }
 
@@ -244,27 +403,67 @@ function rowLinesOf(runs, pageNumber) {
  * size) make a column, which is split where a gap of two characters or more opens or where a
  * run starts above the column's top, and are joined top to bottom. */
 function columnLinesOf(runs, pageNumber) {
-  const vertical = runs.filter((run) => run.vertical).sort((p, q) => q.x - p.x || p.top - q.top);
+  // the vertical runs, right to left, and top to bottom at one x
+  const vertical = runs.filter((run) => run.vertical);
+  vertical.sort((p, q) => {
+    const byX = q.x - p.x;
+    if (byX) {
+      return byX;
+    }
+    return p.top - q.top;
+  });
+
   const columns = [];
   for (const run of vertical) {
-    const column = columns.find(
-      (candidate) =>
-        Math.abs(candidate.x - run.x) <= 0.5 * Math.max(candidate.size, run.size) &&
-        run.top - candidate.bottom < 2 * candidate.size &&
-        run.top >= candidate.top,
-    );
+    const column = columns.find((candidate) => {
+      const xDistance = Math.abs(candidate.x - run.x);
+      const largerSize = Math.max(candidate.size, run.size);
+      const atSameX = xDistance <= 0.5 * largerSize;
+      if (!atSameX) {
+        return false;
+      }
+
+      const gapUnderColumn = run.top - candidate.bottom;
+      const closeUnderColumn = gapUnderColumn < 2 * candidate.size;
+      const notAboveColumn = run.top >= candidate.top;
+      return closeUnderColumn && notAboveColumn;
+    });
+
     if (column) {
       column.runs.push(run);
       column.bottom = Math.max(column.bottom, run.bottom);
-    } else
-      columns.push({ x: run.x, size: run.size, top: run.top, bottom: run.bottom, runs: [run] });
+    } else {
+      const newColumn = {
+        x: run.x,
+        size: run.size,
+        top: run.top,
+        bottom: run.bottom,
+        runs: [run],
+      };
+      columns.push(newColumn);
+    }
   }
+
   const columnLines = [];
-  for (const column of columns.sort((p, q) => q.x - p.x || p.top - q.top)) {
+
+  // the columns, right to left, and top to bottom at one x
+  columns.sort((p, q) => {
+    const byX = q.x - p.x;
+    if (byX) {
+      return byX;
+    }
+    return p.top - q.top;
+  });
+
+  for (const column of columns) {
     column.runs.sort((p, q) => p.top - q.top);
+
     const text = joinPieces(column.runs, (p, q) => q.top - p.bottom);
-    if (!text) continue;
-    columnLines.push({
+    if (!text) {
+      continue;
+    }
+
+    const columnLine = {
       text,
       page: pageNumber,
       vertical: true,
@@ -274,8 +473,10 @@ function columnLinesOf(runs, pageNumber) {
       size: column.size,
       top: column.top,
       bottom: column.bottom,
-    });
+    };
+    columnLines.push(columnLine);
   }
+
   return columnLines;
 }
 
@@ -295,16 +496,25 @@ export function pageLines(page, pageNumber) {
   const columnLines = columnLinesOf(runs, pageNumber);
 
   // a page of mostly vertical text: horizontal lines above its columns come first, the rest after
-  const charsIn = (list) => list.reduce((n, line) => n + Array.from(line.text).length, 0);
+  const charsIn = (list) => {
+    let chars = 0;
+    for (const line of list) {
+      chars = chars + Array.from(line.text).length;
+    }
+    return chars;
+  };
+
   let ordered = [...rowLines, ...columnLines];
+
   if (charsIn(columnLines) > charsIn(rowLines)) {
-    const topOfColumns = Math.min(...columnLines.map((line) => line.top));
-    ordered = [
-      ...rowLines.filter((line) => line.bottom <= topOfColumns),
-      ...columnLines,
-      ...rowLines.filter((line) => line.bottom > topOfColumns),
-    ];
+    const columnTops = columnLines.map((line) => line.top);
+    const topOfColumns = Math.min(...columnTops);
+
+    const rowsAboveColumns = rowLines.filter((line) => line.bottom <= topOfColumns);
+    const rowsAfterColumns = rowLines.filter((line) => line.bottom > topOfColumns);
+    ordered = [...rowsAboveColumns, ...columnLines, ...rowsAfterColumns];
   }
+
   return ordered.map((line) => ({ ...line, pageHeight: height }));
 }
 
@@ -312,9 +522,20 @@ export function pageLines(page, pageNumber) {
 
 const inBand = (line) => {
   const middle = (line.top + line.bottom) / 2;
-  return middle < HEAD_BAND * line.pageHeight || middle > (1 - HEAD_BAND) * line.pageHeight;
+
+  const topBandEnd = HEAD_BAND * line.pageHeight;
+  if (middle < topBandEnd) {
+    return true;
+  }
+
+  const bottomBandStart = (1 - HEAD_BAND) * line.pageHeight;
+  return middle > bottomBandStart;
 };
-const headKey = (text) => text.replace(/[\s　]/g, "").replace(/[0-9０-９]+/g, "#");
+
+const headKey = (text) => {
+  const withoutSpaces = text.replace(/[\s　]/g, "");
+  return withoutSpaces.replace(/[0-9０-９]+/g, "#");
+};
 
 /**
  * The lines of every page without running heads and page numbers: a line in the top or bottom 8%
@@ -323,25 +544,41 @@ const headKey = (text) => text.replace(/[\s　]/g, "").replace(/[0-9０-９]+/g,
  * @param {object[][]} pages the lines of each page
  */
 export function dropRunningHeads(pages) {
-  const pagesOfHead = new Map(); // head key -> the set of pages it is on
-  for (const lines of pages)
-    for (const line of lines)
+  // head key -> the set of pages it is on
+  const pagesOfHead = new Map();
+
+  for (const lines of pages) {
+    for (const line of lines) {
       if (inBand(line)) {
         const key = headKey(line.text);
-        if (!pagesOfHead.has(key)) pagesOfHead.set(key, new Set());
-        pagesOfHead.get(key).add(line.page);
+        if (!pagesOfHead.has(key)) {
+          pagesOfHead.set(key, new Set());
+        }
+        const pagesWithHead = pagesOfHead.get(key);
+        pagesWithHead.add(line.page);
       }
-  const pagesNeeded = Math.max(2, Math.ceil(pages.length / 2));
-  // every line in a band was keyed in the loop above, so its set is there
-  return pages.map((lines) =>
-    lines.filter(
-      (line) =>
-        !(
-          inBand(line) &&
-          (ONLY_NUMBER.test(line.text) || pagesOfHead.get(headKey(line.text)).size >= pagesNeeded)
-        ),
-    ),
-  );
+    }
+  }
+
+  const halfOfPages = Math.ceil(pages.length / 2);
+  const pagesNeeded = Math.max(2, halfOfPages);
+
+  return pages.map((lines) => {
+    return lines.filter((line) => {
+      if (!inBand(line)) {
+        return true;
+      }
+      if (ONLY_NUMBER.test(line.text)) {
+        return false;
+      }
+
+      // every line in a band was keyed in the loop above, so its set is there
+      const key = headKey(line.text);
+      const pagesWithHead = pagesOfHead.get(key);
+      const repeats = pagesWithHead.size >= pagesNeeded;
+      return !repeats;
+    });
+  });
 }
 
 // ------------------------------------------------------------------ blocks (step 4)
@@ -351,55 +588,101 @@ export function dropRunningHeads(pages) {
  * direction, and the left (or top) margin of each page and direction (its smallest start).
  */
 function measures(lines) {
-  const gaps = { false: [], true: [] },
-    lengths = { false: [], true: [] },
-    margins = new Map();
+  const gaps = {
+    false: [],
+    true: [],
+  };
+  const lengths = {
+    false: [],
+    true: [],
+  };
+  const margins = new Map();
+
   lines.forEach((line, i) => {
-    lengths[line.vertical].push(line.end - line.start);
+    const lineLength = line.end - line.start;
+    lengths[line.vertical].push(lineLength);
+
     const pageAndDirection = `${line.page}:${line.vertical}`;
-    margins.set(pageAndDirection, Math.min(margins.get(pageAndDirection) ?? Infinity, line.start));
+    const marginSoFar = margins.get(pageAndDirection) ?? Infinity;
+    const margin = Math.min(marginSoFar, line.start);
+    margins.set(pageAndDirection, margin);
+
     const before = lines[i - 1];
-    if (
-      before &&
-      before.page === line.page &&
-      before.vertical === line.vertical &&
-      line.pos > before.pos
-    )
-      gaps[line.vertical].push(line.pos - before.pos);
+    if (!before) {
+      return;
+    }
+    const inSameText = before.page === line.page && before.vertical === line.vertical;
+    if (inSameText && line.pos > before.pos) {
+      const lineGap = line.pos - before.pos;
+      gaps[line.vertical].push(lineGap);
+    }
   });
+
   // keyed by a line's `vertical`: false for horizontal lines, true for vertical ones. A median of
   // nothing is NaN, and a comparison with NaN is false: the rule that uses it then never fires.
+  const gap = {
+    false: median(gaps.false),
+    true: median(gaps.true),
+  };
+  const length = {
+    false: median(lengths.false),
+    true: median(lengths.true),
+  };
   return {
-    gap: { false: median(gaps.false), true: median(gaps.true) },
-    length: { false: median(lengths.false), true: median(lengths.true) },
+    gap,
+    length,
     margins,
   };
 }
 
 /** The width of one character of a line: an em for Japanese, else its mean advance. */
 function charWidth(line) {
-  if (detectLang(line.text) === "ja") return line.size;
-  return (line.end - line.start) / Math.max(1, Array.from(line.text).length);
+  if (detectLang(line.text) === "ja") {
+    return line.size;
+  }
+
+  const lineLength = line.end - line.start;
+  const charCount = Array.from(line.text).length;
+  const atLeastOneChar = Math.max(1, charCount);
+  return lineLength / atLeastOneChar;
 }
 
 /** Whether `next` starts a visual block after `before` (§5.2 step 4). The rules are tried in
  * this order, and the first that applies decides. */
 export function startsVisualBlock(before, next, measure) {
   // an indent of one character
-  const indent = next.start - measure.margins.get(`${next.page}:${next.vertical}`);
-  if (indent >= MIN_INDENT_CHARS * charWidth(next)) return true;
+  const margin = measure.margins.get(`${next.page}:${next.vertical}`);
+  const indent = next.start - margin;
+  const oneCharIndent = MIN_INDENT_CHARS * charWidth(next);
+  if (indent >= oneCharIndent) {
+    return true;
+  }
+
   // a new page: only after a short line
-  if (next.page !== before.page)
-    return before.end - before.start < SHORT_LINE_RATIO * measure.length[before.vertical];
+  if (next.page !== before.page) {
+    const lengthBefore = before.end - before.start;
+    const shortLength = SHORT_LINE_RATIO * measure.length[before.vertical];
+    return lengthBefore < shortLength;
+  }
+
   // a change between horizontal and vertical text
-  if (next.vertical !== before.vertical) return true;
+  if (next.vertical !== before.vertical) {
+    return true;
+  }
+
   // a wide gap
-  return next.pos - before.pos > BLOCK_GAP_FACTOR * measure.gap[next.vertical];
+  const gap = next.pos - before.pos;
+  const wideGap = BLOCK_GAP_FACTOR * measure.gap[next.vertical];
+  return gap > wideGap;
 }
 
 // ------------------------------------------------------------------ the book
 
-const equalIgnoringSpaces = (a, b) => a.replace(/[\s　]/g, "") === b.replace(/[\s　]/g, "");
+const equalIgnoringSpaces = (a, b) => {
+  const aWithoutSpaces = a.replace(/[\s　]/g, "");
+  const bWithoutSpaces = b.replace(/[\s　]/g, "");
+  return aWithoutSpaces === bWithoutSpaces;
+};
 
 /**
  * The lines that start a chapter (§5.2 step 5), as a Map from the line's index to { title,
@@ -411,23 +694,42 @@ const equalIgnoringSpaces = (a, b) => a.replace(/[\s　]/g, "") === b.replace(/[
  */
 function chapterLinesOf(lines, entries) {
   const outline = entries.filter((entry) => entry.title && entry.page >= 1);
-  const chapterAt = new Map(); // line index -> { title, heading }
+  // line index -> { title, heading }
+  const chapterAt = new Map();
+
   if (outline.length) {
     for (const entry of outline) {
-      const title = normalizeText(entry.title).trim();
+      const normalizedTitle = normalizeText(entry.title);
+      const title = normalizedTitle.trim();
+
       let lineIndex = lines.findIndex(
         (line) => line.page === entry.page && equalIgnoringSpaces(line.text, title),
       );
       const lineIsHeading = lineIndex >= 0;
-      if (!lineIsHeading) lineIndex = lines.findIndex((line) => line.page >= entry.page);
-      if (lineIndex >= 0 && !chapterAt.has(lineIndex))
-        chapterAt.set(lineIndex, { title, heading: lineIsHeading });
+      if (!lineIsHeading) {
+        lineIndex = lines.findIndex((line) => line.page >= entry.page);
+      }
+
+      if (lineIndex >= 0 && !chapterAt.has(lineIndex)) {
+        const chapterStart = {
+          title,
+          heading: lineIsHeading,
+        };
+        chapterAt.set(lineIndex, chapterStart);
+      }
     }
-  } else
-    lines.forEach(
-      (line, i) =>
-        isChapterLine(line.text) && chapterAt.set(i, { title: line.text, heading: true }),
-    );
+  } else {
+    lines.forEach((line, i) => {
+      if (isChapterLine(line.text)) {
+        const chapterStart = {
+          title: line.text,
+          heading: true,
+        };
+        chapterAt.set(i, chapterStart);
+      }
+    });
+  }
+
   return chapterAt;
 }
 
@@ -440,34 +742,54 @@ function chapterLinesOf(lines, entries) {
 export function parsePdfText(pdf, { name = "", key = null } = {}) {
   const pageCount = Math.max(1, pdf.pages.length);
   let charCount = 0;
-  for (const page of pdf.pages)
-    for (const item of page.items)
-      charCount += Array.from((item.str ?? "").replace(/\s/g, "")).length;
-  if (charCount / pageCount < MIN_CHARS_PER_PAGE) throw new BookError(NO_TEXT, "pdfNoText");
+  for (const page of pdf.pages) {
+    for (const item of page.items) {
+      const str = item.str ?? "";
+      const withoutSpaces = str.replace(/\s/g, "");
+      charCount += Array.from(withoutSpaces).length;
+    }
+  }
 
-  const lines = dropRunningHeads(pdf.pages.map((page, i) => pageLines(page, i + 1))).flat();
+  const charsPerPage = charCount / pageCount;
+  if (charsPerPage < MIN_CHARS_PER_PAGE) {
+    throw new BookError(NO_TEXT, "pdfNoText");
+  }
+
+  const linesOfPages = pdf.pages.map((page, i) => pageLines(page, i + 1));
+  const linesOfPagesWithoutHeads = dropRunningHeads(linesOfPages);
+  const lines = linesOfPagesWithoutHeads.flat();
+
   const measure = measures(lines);
   const chapterAt = chapterLinesOf(lines, pdf.outline ?? []);
 
   const builder = new BookBuilder();
-  const chapterMarks = []; // [blockIndex, title] of every chapter
+  // [blockIndex, title] of every chapter
+  const chapterMarks = [];
   const pagesWithFigure = new Set();
   let pending = [];
+
   const flush = () => {
-    if (!pending.length) return;
-    for (const line of pending)
+    if (!pending.length) {
+      return;
+    }
+
+    for (const line of pending) {
       if (isFigureLine(line.text) && !pagesWithFigure.has(line.page)) {
         pagesWithFigure.add(line.page);
-        builder.addFigure({
+
+        const labelChars = Array.from(line.text).slice(0, LABEL_MAX_CHARS);
+        const label = labelChars.join("").trim();
+        const figure = {
           kind: "pdfPage",
           page: line.page,
-          label: Array.from(line.text).slice(0, LABEL_MAX_CHARS).join("").trim(),
-        });
+          label,
+        };
+        builder.addFigure(figure);
       }
-    builder.addParagraph(
-      pending.map((line) => line.text),
-      { page: pending[0].page },
-    );
+    }
+
+    const texts = pending.map((line) => line.text);
+    builder.addParagraph(texts, { page: pending[0].page });
     pending = [];
   };
 
@@ -477,40 +799,81 @@ export function parsePdfText(pdf, { name = "", key = null } = {}) {
     const chapterStart = chapterAt.get(i);
     if (chapterStart) {
       flush();
-      chapterMarks.push([builder.blocks.length, chapterStart.title]);
+
+      const nextBlockIndex = builder.blocks.length;
+      chapterMarks.push([nextBlockIndex, chapterStart.title]);
+
       if (chapterStart.heading) {
-        builder.addHeading(plainSpoken(line.text), 1, { page: line.page });
+        const spoken = plainSpoken(line.text);
+        builder.addHeading(spoken, 1, { page: line.page });
         return;
       }
     } else if (pending.length) {
       const before = pending[pending.length - 1];
-      if (endsSentencePdf(before.text) && startsVisualBlock(before, line, measure)) flush();
+      if (endsSentencePdf(before.text) && startsVisualBlock(before, line, measure)) {
+        flush();
+      }
     }
+
     pending.push(line);
   });
   flush();
 
-  const documentTitle = normalizeText(String(pdf.title ?? "")).trim();
-  const book = builder.build({
+  const rawTitle = String(pdf.title ?? "");
+  const documentTitle = normalizeText(rawTitle).trim();
+  const title = documentTitle || baseName(name);
+  const author = pdf.author?.trim() || null;
+
+  const bookFields = {
     key,
-    title: documentTitle || baseName(name),
-    author: pdf.author?.trim() || null,
+    title,
+    author,
     format: "pdf",
-  });
+  };
+  const book = builder.build(bookFields);
+
   return setChapters(book, chapterMarks);
 }
 
 /** The chapters at the marked blocks (D-77); blocks before the first mark form a chapter titled
  * with the book's title. */
 function setChapters(book, chapterMarks) {
-  const chapterStarts = chapterMarks.filter(
-    ([blockIndex], i) =>
-      blockIndex < book.blocks.length && (i === 0 || blockIndex > chapterMarks[i - 1][0]),
-  );
-  if (!chapterStarts.length) return book;
+  // a mark counts when its block is in the book and comes after the block of the mark before it
+  const chapterStarts = chapterMarks.filter(([blockIndex], i) => {
+    const isBlockOfBook = blockIndex < book.blocks.length;
+    if (!isBlockOfBook) {
+      return false;
+    }
+    if (i === 0) {
+      return true;
+    }
+
+    const blockOfMarkBefore = chapterMarks[i - 1][0];
+    return blockIndex > blockOfMarkBefore;
+  });
+  if (!chapterStarts.length) {
+    return book;
+  }
+
   const chapters = [];
-  if (chapterStarts[0][0] > 0) chapters.push({ title: book.title, firstBlock: 0 });
-  for (const [blockIndex, title] of chapterStarts) chapters.push({ title, firstBlock: blockIndex });
+
+  const firstChapterBlock = chapterStarts[0][0];
+  if (firstChapterBlock > 0) {
+    const openingChapter = {
+      title: book.title,
+      firstBlock: 0,
+    };
+    chapters.push(openingChapter);
+  }
+
+  for (const [blockIndex, title] of chapterStarts) {
+    const chapter = {
+      title,
+      firstBlock: blockIndex,
+    };
+    chapters.push(chapter);
+  }
+
   numberChapters(book.blocks, chapters);
   book.chapters = chapters;
   return book;
@@ -523,8 +886,12 @@ let pdfjs = null;
 async function loadPdfjs() {
   if (!pdfjs) {
     const base = new URL("../../vendor/pdfjs/", import.meta.url);
-    pdfjs = await import(new URL("pdf.min.mjs", base).href);
-    pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdf.worker.min.mjs", base).href;
+
+    const libraryUrl = new URL("pdf.min.mjs", base);
+    pdfjs = await import(libraryUrl.href);
+
+    const workerUrl = new URL("pdf.worker.min.mjs", base);
+    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl.href;
   }
   return pdfjs;
 }
@@ -532,11 +899,14 @@ async function loadPdfjs() {
 /** The options of getDocument for the site: CMaps and standard fonts from vendor/pdfjs/. */
 function documentOptions(data) {
   const base = new URL("../../vendor/pdfjs/", import.meta.url);
+  const cMapFolder = new URL("cmaps/", base);
+  const standardFontFolder = new URL("standard_fonts/", base);
+
   return {
     data,
-    cMapUrl: new URL("cmaps/", base).href,
+    cMapUrl: cMapFolder.href,
     cMapPacked: true,
-    standardFontDataUrl: new URL("standard_fonts/", base).href,
+    standardFontDataUrl: standardFontFolder.href,
     isEvalSupported: false,
     verbosity: 0,
   };
@@ -547,9 +917,11 @@ function documentOptions(data) {
  * top level), each at its destination's page.
  */
 async function chapterEntriesOf(doc) {
-  const tree = (await doc.getOutline().catch(() => null)) ?? [];
-  let level = tree,
-    chosen = tree;
+  const outlineOrNothing = await doc.getOutline().catch(() => null);
+  const tree = outlineOrNothing ?? [];
+
+  let level = tree;
+  let chosen = tree;
   while (level.length) {
     if (level.length >= 2) {
       chosen = level;
@@ -557,19 +929,34 @@ async function chapterEntriesOf(doc) {
     }
     level = level.flatMap((entry) => entry.items ?? []);
   }
+
   const entries = [];
   for (const entry of chosen) {
     try {
-      const dest =
-        typeof entry.dest === "string" ? await doc.getDestination(entry.dest) : entry.dest;
-      if (!Array.isArray(dest)) continue;
+      let dest = entry.dest;
+      if (typeof dest === "string") {
+        dest = await doc.getDestination(dest);
+      }
+      if (!Array.isArray(dest)) {
+        continue;
+      }
+
       const target = dest[0];
-      const index = typeof target === "number" ? target : await doc.getPageIndex(target);
-      entries.push({ title: entry.title, page: index + 1 });
+      let index = target;
+      if (typeof target !== "number") {
+        index = await doc.getPageIndex(target);
+      }
+
+      const chapterEntry = {
+        title: entry.title,
+        page: index + 1,
+      };
+      entries.push(chapterEntry);
     } catch {
       // an entry that points nowhere is left out
     }
   }
+
   return entries;
 }
 
@@ -582,37 +969,65 @@ async function chapterEntriesOf(doc) {
  */
 export async function readDocument(doc, lib) {
   const pages = [];
+
   for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
     const page = await doc.getPage(pageNumber);
     const content = await page.getTextContent();
     const styles = content.styles ?? {};
+
     let view = page.view.slice();
     let toShownSpace = null;
     if (page.rotate % 360) {
       const viewport = page.getViewport({ scale: 1 });
       // the viewport's transform has y growing downward; this turns y back to grow upward
-      toShownSpace = lib.Util.transform([1, 0, 0, -1, 0, viewport.height], viewport.transform);
+      const flipY = [1, 0, 0, -1, 0, viewport.height];
+      toShownSpace = lib.Util.transform(flipY, viewport.transform);
       view = [0, 0, viewport.width, viewport.height];
     }
-    const items = content.items
-      .filter((item) => typeof item.str === "string")
-      .map((item) => ({
+
+    const items = [];
+    for (const item of content.items) {
+      if (typeof item.str !== "string") {
+        continue;
+      }
+
+      let transform = item.transform;
+      if (toShownSpace) {
+        transform = lib.Util.transform(toShownSpace, item.transform);
+      }
+
+      const fontStyle = styles[item.fontName];
+      const vertical = Boolean(fontStyle?.vertical);
+
+      const recorded = {
         str: item.str,
-        transform: toShownSpace ? lib.Util.transform(toShownSpace, item.transform) : item.transform,
+        transform,
         width: item.width,
         height: item.height,
         hasEOL: item.hasEOL,
-        vertical: Boolean(styles[item.fontName]?.vertical),
-      }));
-    pages.push({ view, items });
+        vertical,
+      };
+      items.push(recorded);
+    }
+
+    const recordedPage = {
+      view,
+      items,
+    };
+    pages.push(recordedPage);
     page.cleanup();
   }
+
   const { info } = await doc.getMetadata().catch(() => ({ info: {} }));
+  const outline = await chapterEntriesOf(doc);
+  const title = info?.Title ?? null;
+  const author = info?.Author ?? null;
+
   return {
     pages,
-    outline: await chapterEntriesOf(doc),
-    title: info?.Title ?? null,
-    author: info?.Author ?? null,
+    outline,
+    title,
+    author,
   };
 }
 
@@ -625,24 +1040,35 @@ export async function readDocument(doc, lib) {
  * @param {{name: string, bytes: Uint8Array, key?: string|null}} file
  */
 export async function parsePdf({ name, bytes, key = null }) {
-  let lib, doc;
+  let lib;
+  let doc;
+
   try {
     lib = await loadPdfjs();
+
     // pdf.js hands its data to the worker and empties the buffer, so it gets a copy
-    doc = await lib.getDocument(documentOptions(bytes.slice())).promise;
+    const bytesCopy = bytes.slice();
+    const options = documentOptions(bytesCopy);
+    const loadingTask = lib.getDocument(options);
+    doc = await loadingTask.promise;
   } catch (cause) {
     // pdf.js is missing, or the file is broken or locked: the caller shows the format refusal
     const error = new Error("The PDF could not be opened", { cause });
     error.code = "pdf";
     throw error;
   }
+
   try {
-    const book = parsePdfText(await readDocument(doc, lib), { name, key });
-    Object.defineProperty(book, "pdfDocument", {
+    const recordedText = await readDocument(doc, lib);
+    const book = parsePdfText(recordedText, { name, key });
+
+    const hiddenProperty = {
       value: doc,
       enumerable: false,
       configurable: true,
-    });
+    };
+    Object.defineProperty(book, "pdfDocument", hiddenProperty);
+
     return book;
   } catch (error) {
     doc.destroy();

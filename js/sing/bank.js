@@ -6,11 +6,16 @@ import { vowelOf } from "../lang/morae.js";
 
 const BASE = "data/sing/bank/no7/";
 const MAX_SHEETS = 100; // 1.44 MB each at 24 kHz (SD-S08)
-let context = null, // the AudioContext that decodes the sheets
-  // index.json: the sheet of each mora, the range of pitches, the window and the leads
-  index = null;
+
+// the AudioContext that decodes the sheets
+let context = null;
+
+// index.json: the sheet of each mora, the range of pitches, the window and the leads
+let index = null;
+
 // mora -> AudioBuffer, in the order in which ensure() last asked for them
 const sheets = new Map();
+
 const loading = new Map(); // mora -> Promise
 
 // The index of an empty bank: every slot is a rest, but the song's clock and its light go on
@@ -32,34 +37,57 @@ let missing = false;
  * the bank stays empty for the life of the page. */
 export async function init(audioContext) {
   context = audioContext;
-  if (!index)
+
+  if (!index) {
     try {
-      const response = await fetch(BASE + "index.json");
-      if (!response.ok) throw new Error(`bank index ${response.status}`);
+      const indexUrl = BASE + "index.json";
+      const response = await fetch(indexUrl);
+      if (!response.ok) {
+        throw new Error(`bank index ${response.status}`);
+      }
+
       index = await response.json();
     } catch {
       index = EMPTY;
       missing = true;
     }
+  }
+
   return index;
 }
+
 /** Whether the voice files could not be loaded (D-87). */
 export const isMissing = () => missing;
 
 /** Fetch a sheet and decode it. */
 async function fetchSheet(file) {
-  const response = await fetch(BASE + file);
-  if (!response.ok) throw new Error(`bank: ${file} ${response.status}`);
-  return context.decodeAudioData(await response.arrayBuffer());
+  const sheetUrl = BASE + file;
+  const response = await fetch(sheetUrl);
+  if (!response.ok) {
+    throw new Error(`bank: ${file} ${response.status}`);
+  }
+
+  // the context as it is before the file's bytes are waited for
+  const decoder = context;
+  const encoded = await response.arrayBuffer();
+  return decoder.decodeAudioData(encoded);
 }
 
 // The mora whose sheet is used: itself, or its vowel when the bank has no sheet for it (Q-21);
 // null = a rest.
 export function sound(mora) {
-  if (mora === "ッ") return null;
-  if (index.morae[mora]) return mora;
+  if (mora === "ッ") {
+    return null;
+  }
+  if (index.morae[mora]) {
+    return mora;
+  }
+
   const vowel = vowelOf(mora);
-  return vowel && index.morae[vowel] ? vowel : null;
+  if (vowel && index.morae[vowel]) {
+    return vowel;
+  }
+  return null;
 }
 
 /** Have the sheets of these morae loaded; resolves when each is loaded or has failed (a failed
@@ -68,39 +96,62 @@ export function sound(mora) {
  * `onProgress(arrived, of)` is told how many of this call's sheets are there: at once those in
  * memory, then one more as each of the others arrives or fails. */
 export function ensure(morae, onProgress = null) {
-  const jobs = [],
-    names = new Set(morae.map(sound).filter(Boolean));
+  const jobs = [];
+
+  // each sheet once; a rest has none
+  const sheetNames = morae.map(sound);
+  const sounding = sheetNames.filter(Boolean);
+  const names = new Set(sounding);
+
   for (const name of names) {
     if (sheets.has(name)) {
+      // asked for again: the sheet goes to the end of the order
       const buffer = sheets.get(name);
       sheets.delete(name);
       sheets.set(name, buffer);
       continue;
     }
+
     if (!loading.has(name)) {
-      loading.set(
-        name,
-        fetchSheet(index.morae[name]).then(
-          (buffer) => {
-            sheets.set(name, buffer);
-            loading.delete(name);
-            while (sheets.size > MAX_SHEETS) sheets.delete(sheets.keys().next().value);
-          },
-          () => {
-            // a sheet that cannot be loaded leaves its morae silent (D-87); the song goes on
-            loading.delete(name);
-            missing = true;
-          },
-        ),
+      const file = index.morae[name];
+      const fetching = fetchSheet(file);
+
+      const job = fetching.then(
+        (buffer) => {
+          sheets.set(name, buffer);
+          loading.delete(name);
+
+          while (sheets.size > MAX_SHEETS) {
+            const askedLongestAgo = sheets.keys().next().value;
+            sheets.delete(askedLongestAgo);
+          }
+        },
+        () => {
+          // a sheet that cannot be loaded leaves its morae silent (D-87); the song goes on
+          loading.delete(name);
+          missing = true;
+        },
       );
+      loading.set(name, job);
     }
-    jobs.push(loading.get(name));
+
+    const pendingJob = loading.get(name);
+    jobs.push(pendingJob);
   }
+
   if (onProgress) {
+    // the sheets already in memory have arrived
     let arrived = names.size - jobs.length;
     onProgress(arrived, names.size);
-    for (const job of jobs) job.then(() => onProgress(++arrived, names.size));
+
+    for (const job of jobs) {
+      job.then(() => {
+        ++arrived;
+        return onProgress(arrived, names.size);
+      });
+    }
   }
+
   return Promise.all(jobs);
 }
 
@@ -113,22 +164,49 @@ export function ensure(morae, onProgress = null) {
 // much (measured by tools/sing/bank_sound.py), so that it still starts on its slot (SC-S05).
 export function clip(mora, midi) {
   const sheetName = sound(mora);
-  const buffer = sheetName && sheets.get(sheetName);
-  if (!buffer) return null;
-  const pitch = Math.max(index.lo, Math.min(index.hi, midi));
-  const late = index.late?.[sheetName]?.[pitch - index.lo] || 0;
+  if (!sheetName) {
+    return null;
+  }
+  const buffer = sheets.get(sheetName);
+  if (!buffer) {
+    return null;
+  }
+
+  const pitchAtMost = Math.min(index.hi, midi);
+  const pitch = Math.max(index.lo, pitchAtMost);
+
+  // which window of the sheet, counted from 0
+  const windowNumber = pitch - index.lo;
+  const windowSeconds = windowNumber * index.window;
+
+  const late = index.late?.[sheetName]?.[windowNumber] || 0;
+  const onsetSeconds = index.onset + late;
+
+  let lead = 0;
+  if (sheetName === mora) {
+    lead = index.lead[sheetName] || 0;
+  }
+
   return {
     buffer,
-    window: (pitch - index.lo) * index.window,
-    onset: index.onset + late,
-    lead: sheetName === mora ? index.lead[sheetName] || 0 : 0,
+    window: windowSeconds,
+    onset: onsetSeconds,
+    lead,
     length: index.window,
   };
 }
 
 /** The bank's index. */
 export const info = () => index;
+
 /** How many sheets are in memory. */
 export const loaded = () => sheets.size;
+
 /** How many bytes the sheets in memory take, decoded (4 bytes a sample). */
-export const bytes = () => [...sheets.values()].reduce((sum, sheet) => sum + sheet.length * 4, 0);
+export function bytes() {
+  let sum = 0;
+  for (const sheet of sheets.values()) {
+    sum += sheet.length * 4;
+  }
+  return sum;
+}

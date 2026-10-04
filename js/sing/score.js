@@ -15,24 +15,36 @@ import { SLOTS_PER_BAR } from "./bars.js";
  * rounding error puts just before a slot line (1.4999999999999998) starts on that slot.
  */
 export function notesBySlot(score) {
-  const bySlot = Array.from({ length: score.bars * SLOTS_PER_BAR }, () => []);
+  const slotCount = score.bars * SLOTS_PER_BAR;
+  const bySlot = Array.from({ length: slotCount }, () => []);
+
   for (const [part, { program, drum, notes: partNotes }] of Object.entries(score.parts)) {
     for (const [bar, beatInBar, lengthInBeats, pitch, velocity] of partNotes) {
       // in slots from the score's start
-      const position = ((bar - 1) * score.beatsPerBar + beatInBar) * 2;
+      const beat = (bar - 1) * score.beatsPerBar + beatInBar;
+      const position = beat * 2;
+
       const slot = Math.floor(position + 1e-9);
-      if (slot < 0 || slot >= bySlot.length) continue;
-      bySlot[slot].push({
+      if (slot < 0 || slot >= bySlot.length) {
+        continue;
+      }
+
+      const noteProgram = drum ? null : program;
+      const offset = Math.max(0, position - slot);
+
+      const note = {
         part,
-        program: drum ? null : program,
+        program: noteProgram,
         drum: !!drum,
         pitch,
-        offset: Math.max(0, position - slot),
+        offset,
         slots: lengthInBeats * 2,
         velocity,
-      });
+      };
+      bySlot[slot].push(note);
     }
   }
+
   return bySlot;
 }
 
@@ -45,20 +57,38 @@ export function notesBySlot(score) {
  * counts in every slot it lasts through. A note held past the score's last bar is cut there.
  */
 export function singablePitches(score, lo, hi) {
-  const highest = Array.from({ length: score.bars * SLOTS_PER_BAR }, () => null);
+  const slotCount = score.bars * SLOTS_PER_BAR;
+  const highest = Array.from({ length: slotCount }, () => null);
+
   for (const { drum, notes: partNotes } of Object.values(score.parts)) {
-    if (drum) continue;
+    if (drum) {
+      continue;
+    }
+
     for (const [bar, beatInBar, lengthInBeats, pitch] of partNotes) {
-      if (pitch < lo || pitch > hi) continue;
+      if (pitch < lo || pitch > hi) {
+        continue;
+      }
+
       // in slots from the score's start; 1e-9 as in notesBySlot, for a beat written a rounding
       // error before a slot line
-      const start = ((bar - 1) * score.beatsPerBar + beatInBar) * 2,
-        end = start + lengthInBeats * 2;
-      const firstSlot = Math.max(0, Math.floor(start + 1e-9)),
-        slotAfterLast = Math.min(highest.length, Math.ceil(end - 1e-9));
-      for (let slot = firstSlot; slot < slotAfterLast; slot++)
-        if (highest[slot] === null || pitch > highest[slot]) highest[slot] = pitch;
+      const beat = (bar - 1) * score.beatsPerBar + beatInBar;
+      const start = beat * 2;
+      const end = start + lengthInBeats * 2;
+
+      const startSlot = Math.floor(start + 1e-9);
+      const firstSlot = Math.max(0, startSlot);
+
+      const endSlot = Math.ceil(end - 1e-9);
+      const slotAfterLast = Math.min(highest.length, endSlot);
+
+      for (let slot = firstSlot; slot < slotAfterLast; slot++) {
+        if (highest[slot] === null || pitch > highest[slot]) {
+          highest[slot] = pitch;
+        }
+      }
     }
   }
+
   return highest;
 }

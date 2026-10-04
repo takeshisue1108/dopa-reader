@@ -16,8 +16,9 @@
 // Messages in:  { id, text }
 // Messages out: { id: 0, loaded, of } as each file of the dictionary arrives (for the charging
 //               display, §6.2a); { id: 0, ready: true } once the dictionary is loaded, or
-//               { id: 0, error } when it cannot be; { id, phrases, targets, ipa, ms } for each
-//               text (ipa: the IPA of its words of Latin letters, when it has any), or
+//               { id: 0, error } when it cannot be; { id, phrases, targets, ipa, englishPhrases,
+//               ms } for each text (ipa: the IPA of its words of Latin letters, when it has any;
+//               englishPhrases: the English score of an English sentence), or
 //               { id, error }.
 // Before the dictionary is loaded, texts wait; if it cannot be loaded, every text gets an error
 // and the reader goes on without a voice (SD-W09).
@@ -46,91 +47,177 @@ const NativeRequest = self.XMLHttpRequest;
 self.XMLHttpRequest = class extends NativeRequest {
   constructor() {
     super();
-    this.addEventListener("loadend", () =>
-      self.postMessage({ id: 0, loaded: ++dictionaryArrived, of: DICTIONARY_FILES }),
-    );
+
+    this.addEventListener("loadend", () => {
+      dictionaryArrived += 1;
+
+      const oneMoreFile = {
+        id: 0,
+        loaded: dictionaryArrived,
+        of: DICTIONARY_FILES,
+      };
+      self.postMessage(oneMoreFile);
+    });
   }
 };
 
 async function loadTokenizer() {
   const response = await fetch(KUROMOJI_SCRIPT_URL);
-  if (!response.ok) throw new Error(`kuromoji.js: ${response.status}`);
-  new Function(await response.text())(); // sets self.kuromoji
-  return new Promise((resolve, reject) =>
-    self.kuromoji
-      .builder({ dicPath: DICTIONARY_PATH })
-      .build((error, built) => (error ? reject(error) : resolve(built))),
-  );
+  if (!response.ok) {
+    throw new Error(`kuromoji.js: ${response.status}`);
+  }
+
+  const script = await response.text();
+  const runScript = new Function(script);
+  runScript(); // sets self.kuromoji
+
+  return new Promise((resolve, reject) => {
+    const builder = self.kuromoji.builder({ dicPath: DICTIONARY_PATH });
+
+    builder.build((error, built) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(built);
+      }
+    });
+  });
 }
 
 const fetched = async (url) => {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`${url.pathname}: ${response.status}`);
+  if (!response.ok) {
+    throw new Error(`${url.pathname}: ${response.status}`);
+  }
   return response;
 };
+
 /** A loader that fetches once, at its first call, and gives null (with a line in the console)
  * when what it fetches cannot be had. */
 const once = (what, load) => {
   let loading = null;
-  return () =>
-    (loading ??= load().catch((error) => {
-      console.warn(`${what} did not load: ${error}`);
-      return null;
-    }));
+
+  return () => {
+    if (loading === null) {
+      const attempt = load();
+
+      loading = attempt.catch((error) => {
+        console.warn(`${what} did not load: ${error}`);
+        return null;
+      });
+    }
+    return loading;
+  };
 };
 
 // The English pronunciations (pronounce.js): the dictionary in IPA and the words with two.
 const loadEnglish = once("the English dictionary", async () => {
-  const [table, homographs] = await Promise.all([
-    fetched(ENGLISH_IPA_URL).then((response) => response.json()),
-    fetched(ENGLISH_HOMOGRAPHS_URL).then((response) => response.json()),
-  ]);
+  // the two files are asked for together
+  const tableComing = fetched(ENGLISH_IPA_URL).then((response) => response.json());
+  const homographsComing = fetched(ENGLISH_HOMOGRAPHS_URL).then((response) => response.json());
+  const [table, homographs] = await Promise.all([tableComing, homographsComing]);
+
   return createEnglish({ table, homographs });
 });
+
 // The model for the words outside the dictionary (g2p.js): its weights, 32-bit floats.
-const loadModel = once("the English spelling model", async () =>
-  createG2p(new Float32Array(await (await fetched(ENGLISH_MODEL_URL)).arrayBuffer())),
-);
+const loadModel = once("the English spelling model", async () => {
+  const response = await fetched(ENGLISH_MODEL_URL);
+  const bytes = await response.arrayBuffer();
+  const weights = new Float32Array(bytes);
+  return createG2p(weights);
+});
 
 /** The English pronunciations ready for a text: loaded, and with the model's answer for each of
  * its words that the dictionary cannot give. null when the text has no Latin letter, or when
  * the dictionary cannot be loaded. */
 async function englishFor(text) {
-  if (!/[A-Za-zＡ-Ｚａ-ｚ]/.test(text)) return null;
+  const hasLatinLetter = /[A-Za-zＡ-Ｚａ-ｚ]/.test(text);
+  if (!hasLatinLetter) {
+    return null;
+  }
+
   const english = await loadEnglish();
-  if (!english) return null;
+  if (!english) {
+    return null;
+  }
+
   const unknown = english.unknownWords(text);
   if (unknown.length) {
     const predict = await loadModel();
-    if (predict) for (const word of unknown) english.learn(word, predict(word));
+    if (predict) {
+      for (const word of unknown) {
+        const arpabet = predict(word);
+        english.learn(word, arpabet);
+      }
+    }
   }
+
   return english;
 }
 
 // The tagger of English sentences (compromise).
-const loadTagger = once(
-  "the English tagger",
-  async () => (await import(ENGLISH_TAGGER_URL)).default,
-);
+const loadTagger = once("the English tagger", async () => {
+  const taggerModule = await import(ENGLISH_TAGGER_URL);
+  return taggerModule.default;
+});
 
 const loaded = loadTokenizer();
 loaded.then(
-  () => self.postMessage({ id: 0, ready: true }),
-  (error) => self.postMessage({ id: 0, error: `the dictionary did not load: ${error}` }),
+  () => {
+    const dictionaryReady = {
+      id: 0,
+      ready: true,
+    };
+    self.postMessage(dictionaryReady);
+  },
+  (error) => {
+    const dictionaryFailed = {
+      id: 0,
+      error: `the dictionary did not load: ${error}`,
+    };
+    self.postMessage(dictionaryFailed);
+  },
 );
 
 self.onmessage = async ({ data: { id, text } }) => {
   try {
     const tokenizer = await loaded;
     const english = await englishFor(text);
-    const tagger = isEnglishSentence(text) ? await loadTagger() : null;
+
+    let tagger = null;
+    if (isEnglishSentence(text)) {
+      tagger = await loadTagger();
+    }
+
     const started = performance.now();
-    const { phrases, targets, ipa } = analyze(text, tokenizer.tokenize(text), {
-      english,
-      englishTerms: tagger ? termsOf(tagger, text) : null,
-    });
-    self.postMessage({ id, phrases, targets, ipa, ms: performance.now() - started });
+
+    const tokens = tokenizer.tokenize(text);
+
+    let englishTerms = null;
+    if (tagger) {
+      englishTerms = termsOf(tagger, text);
+    }
+
+    const analysis = analyze(text, tokens, { english, englishTerms });
+    const { phrases, targets, ipa, englishPhrases } = analysis;
+
+    const ms = performance.now() - started;
+    const answer = {
+      id,
+      phrases,
+      targets,
+      ipa,
+      englishPhrases,
+      ms,
+    };
+    self.postMessage(answer);
   } catch (error) {
-    self.postMessage({ id, error: String(error?.message ?? error) });
+    const reason = String(error?.message ?? error);
+    const failed = {
+      id,
+      error: reason,
+    };
+    self.postMessage(failed);
   }
 };

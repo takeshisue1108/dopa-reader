@@ -24,15 +24,24 @@ for (const [row, vowel] of [
   ["エケセテネヘメレゲゼデベペェ", "エ"],
   ["オコソトノホモヨロヲゴゾドボポォョ", "オ"],
   ["ン", "ン"],
-])
-  for (const kana of row) VOWEL_OF_KANA[kana] = vowel;
+]) {
+  for (const kana of row) {
+    VOWEL_OF_KANA[kana] = vowel;
+  }
+}
 
 /** The vowel kana a mora ends in (ン for ン); null for ッ, which has no sound to prolong, and for
  * a kana the table does not hold (ヰ, ヱ). */
-export const vowelOf = (mora) => VOWEL_OF_KANA[mora[mora.length - 1]] ?? null;
+export function vowelOf(mora) {
+  const lastKana = mora[mora.length - 1];
+  return VOWEL_OF_KANA[lastKana] ?? null;
+}
 
 /** Katakana with each 「ニャン」 unit spelled out, for showing a pronunciation. */
-export const spelledOut = (pron) => (pron ?? "").replaceAll(NYAN_MARK, NYAN);
+export function spelledOut(pron) {
+  const written = pron ?? "";
+  return written.replaceAll(NYAN_MARK, NYAN);
+}
 
 /**
  * The morae of a pronunciation in katakana, as [{ k, long }].
@@ -47,20 +56,60 @@ export const spelledOut = (pron) => (pron ?? "").replaceAll(NYAN_MARK, NYAN);
  */
 export function moraeOf(pron, kanaBefore = null) {
   const morae = [];
+
   for (const char of pron ?? "") {
     if (char === NYAN_MARK) {
-      morae.push({ k: NYAN, long: false });
+      const nyan = {
+        k: NYAN,
+        long: false,
+      };
+      morae.push(nyan);
       continue;
     }
-    if (!KANA.test(char)) continue;
-    const previousIsPlainKana =
-      morae.length > 0 && !morae[morae.length - 1].long && morae[morae.length - 1].k !== NYAN;
-    if (SMALL_KANA.includes(char) && previousIsPlainKana) morae[morae.length - 1].k += char;
-    else if (char === "ー") {
-      const prolonged = morae.length ? morae[morae.length - 1].k : kanaBefore;
-      morae.push({ k: (prolonged && vowelOf(prolonged)) || "ア", long: true });
-    } else morae.push({ k: SAME_SOUND[char] ?? char, long: false });
+
+    if (!KANA.test(char)) {
+      continue;
+    }
+
+    let lastMora = null;
+    if (morae.length > 0) {
+      lastMora = morae[morae.length - 1];
+    }
+
+    let previousIsPlainKana = false;
+    if (lastMora) {
+      previousIsPlainKana = !lastMora.long && lastMora.k !== NYAN;
+    }
+
+    if (SMALL_KANA.includes(char) && previousIsPlainKana) {
+      lastMora.k += char;
+    } else if (char === "ー") {
+      let prolonged = kanaBefore;
+      if (lastMora) {
+        prolonged = lastMora.k;
+      }
+
+      let vowel = "ア";
+      if (prolonged) {
+        vowel = vowelOf(prolonged) || "ア";
+      }
+
+      const longMora = {
+        k: vowel,
+        long: true,
+      };
+      morae.push(longMora);
+    } else {
+      const sound = SAME_SOUND[char] ?? char;
+
+      const mora = {
+        k: sound,
+        long: false,
+      };
+      morae.push(mora);
+    }
   }
+
   return morae;
 }
 
@@ -72,13 +121,20 @@ export function moraeOf(pron, kanaBefore = null) {
  */
 export function spreadOverCharacters(sounds, wordStart, wordEnd) {
   const length = wordEnd - wordStart;
-  return sounds.map(({ k, long }, n) => ({
-    k,
-    start: wordStart + Math.floor((length * n) / sounds.length),
-    end: wordStart + Math.ceil((length * (n + 1)) / sounds.length),
-    tails: [],
-    long,
-  }));
+
+  return sounds.map(({ k, long }, n) => {
+    // how many of the word's characters lie before this mora, and before the next one
+    const charactersBefore = (length * n) / sounds.length;
+    const charactersBeforeNext = (length * (n + 1)) / sounds.length;
+
+    return {
+      k,
+      start: wordStart + Math.floor(charactersBefore),
+      end: wordStart + Math.ceil(charactersBeforeNext),
+      tails: [],
+      long,
+    };
+  });
 }
 
 /**
@@ -94,28 +150,56 @@ export function spreadOverCharacters(sounds, wordStart, wordEnd) {
  *     セ エ サ ン ヨ オ シ キ ガ (9) -> セ エ サン ヨ オ シ キ ガ (8)
  */
 export function fit(morae) {
-  const canBecomeEnding = (mora, previous) =>
-    mora.k === "ン" &&
-    !mora.long &&
-    !!previous &&
-    previous.k !== "ッ" &&
-    !previous.k.endsWith("ン");
+  const canBecomeEnding = (mora, previous) => {
+    const isPlainN = mora.k === "ン" && !mora.long;
+    if (!isPlainN || !previous) {
+      return false;
+    }
+    return previous.k !== "ッ" && !previous.k.endsWith("ン");
+  };
+
   let tooMany = morae.length - SLOTS_PER_BAR;
-  const candidates = morae.filter((mora, i) => canBecomeEnding(mora, i ? morae[i - 1] : null));
-  if (tooMany <= 0 || candidates.length < tooMany) return morae;
+
+  const candidates = morae.filter((mora, i) => {
+    let previous = null;
+    if (i) {
+      previous = morae[i - 1];
+    }
+    return canBecomeEnding(mora, previous);
+  });
+
+  if (tooMany <= 0 || candidates.length < tooMany) {
+    return morae;
+  }
 
   const fitted = [];
   for (const mora of morae) {
-    const previous = fitted.length ? fitted[fitted.length - 1] : null;
-    if (tooMany > 0 && canBecomeEnding(mora, previous) && !previous.tails.length) {
+    let previous = null;
+    if (fitted.length) {
+      previous = fitted[fitted.length - 1];
+    }
+
+    let joinsPrevious = false;
+    if (tooMany > 0 && canBecomeEnding(mora, previous)) {
+      joinsPrevious = !previous.tails.length;
+    }
+
+    if (joinsPrevious) {
       previous.k += "ン"; // one sound: the closed syllable of the bank (D-118)
       previous.end = mora.end; // the ン's character lights with the mora before it
       tooMany -= 1;
-    } else fitted.push(mora);
+    } else {
+      fitted.push(mora);
+    }
   }
+
   return fitted;
 }
 
 /** Hiragana as katakana (ぁ to ゖ, and ゝ ゞ), anything else unchanged. */
-export const toKatakana = (text) =>
-  text.replace(/[ぁ-ゖゝゞ]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0x60));
+export function toKatakana(text) {
+  return text.replace(/[ぁ-ゖゝゞ]/g, (char) => {
+    const katakanaCode = char.charCodeAt(0) + 0x60;
+    return String.fromCharCode(katakanaCode);
+  });
+}

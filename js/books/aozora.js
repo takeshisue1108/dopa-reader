@@ -97,9 +97,16 @@ const DASHES = /^-{20,}\s*$/;
 /** The character of a gaiji note's body, or null (§5.2 step 6). */
 export function gaijiChar(body) {
   const unicode = body.match(/U\+([0-9A-Fa-f]{4,6})/);
-  if (unicode) return String.fromCodePoint(parseInt(unicode[1], 16));
+  if (unicode) {
+    const codePoint = parseInt(unicode[1], 16);
+    return String.fromCodePoint(codePoint);
+  }
+
   const jis = body.match(/(?:^|、|水準)([12]-\d{1,2}-\d{1,2})(?:、|$)/);
-  return jis ? (GAIJI[jis[1]] ?? null) : null;
+  if (!jis) {
+    return null;
+  }
+  return GAIJI[jis[1]] ?? null;
 }
 
 /**
@@ -118,28 +125,42 @@ class HeldGaiji {
   /** A line with each of its gaiji notes replaced by a new placeholder. */
   hold(line) {
     return line.replace(GAIJI_NOTE, (_, body) => {
-      const placeholder = String.fromCharCode(this.nextPlaceholder++);
-      this.byPlaceholder.set(placeholder, {
+      const placeholderCode = this.nextPlaceholder;
+      this.nextPlaceholder++;
+      const placeholder = String.fromCharCode(placeholderCode);
+
+      const gaiji = {
         char: gaijiChar(body),
         describedByParts: body.startsWith("「"),
-      });
+      };
+      this.byPlaceholder.set(placeholder, gaiji);
+
       return placeholder;
     });
   }
 
   /** What a character stands for when it is a placeholder; undefined for any other character. */
   of(ch) {
-    return PLACEHOLDER.test(ch) ? this.byPlaceholder.get(ch) : undefined;
+    if (PLACEHOLDER.test(ch)) {
+      return this.byPlaceholder.get(ch);
+    }
+    return undefined;
   }
 
   /** A text with each gaiji as it is shown: its character, or 「※」 when the table has none. */
   shown(text) {
-    return Array.from(text)
-      .map((ch) => {
-        const gaiji = this.of(ch);
-        return gaiji ? (gaiji.char ?? "※") : ch;
-      })
-      .join("");
+    let shownText = "";
+
+    for (const ch of Array.from(text)) {
+      const gaiji = this.of(ch);
+      if (gaiji) {
+        shownText += gaiji.char ?? "※";
+      } else {
+        shownText += ch;
+      }
+    }
+
+    return shownText;
   }
 }
 
@@ -157,12 +178,24 @@ function letterKind(ch, held) {
   const gaiji = held.of(ch);
   if (gaiji) {
     const { char, describedByParts } = gaiji;
-    return char === null ? (describedByParts ? "kanji" : null) : letterKind(char, held);
+    if (char !== null) {
+      return letterKind(char, held);
+    }
+    return describedByParts ? "kanji" : null;
   }
-  if (isKanji(ch)) return "kanji";
-  if (/[\p{Script=Hiragana}]/u.test(ch)) return "hiragana";
-  if (/[\p{Script=Katakana}ー]/u.test(ch)) return "katakana";
-  if (/[\p{Script=Latin}0-9０-９'’]/u.test(ch)) return "latin";
+
+  if (isKanji(ch)) {
+    return "kanji";
+  }
+  if (/[\p{Script=Hiragana}]/u.test(ch)) {
+    return "hiragana";
+  }
+  if (/[\p{Script=Katakana}ー]/u.test(ch)) {
+    return "katakana";
+  }
+  if (/[\p{Script=Latin}0-9０-９'’]/u.test(ch)) {
+    return "latin";
+  }
   return null;
 }
 
@@ -173,8 +206,22 @@ function letterKind(ch, held) {
  */
 function baseStartByKind(pending, held) {
   let baseStart = pending.length;
-  const kind = baseStart > 0 ? letterKind(pending[baseStart - 1], held) : null;
-  if (kind) while (baseStart > 0 && letterKind(pending[baseStart - 1], held) === kind) baseStart--;
+
+  let kind = null;
+  if (baseStart > 0) {
+    kind = letterKind(pending[baseStart - 1], held);
+  }
+
+  if (kind) {
+    while (baseStart > 0) {
+      const kindBefore = letterKind(pending[baseStart - 1], held);
+      if (kindBefore !== kind) {
+        break;
+      }
+      baseStart--;
+    }
+  }
+
   return baseStart;
 }
 
@@ -185,46 +232,79 @@ function baseStartByKind(pending, held) {
 function spokenOf(line, held) {
   const spoken = new Spoken();
   const chars = Array.from(line);
+
   const emit = (text) => {
     for (const ch of Array.from(text)) {
       const gaiji = held.of(ch);
-      if (!gaiji) spoken.plain(ch);
-      else if (gaiji.char === null) spoken.silent("※");
-      else spoken.plain(gaiji.char);
+      if (!gaiji) {
+        spoken.plain(ch);
+      } else if (gaiji.char === null) {
+        spoken.silent("※");
+      } else {
+        spoken.plain(gaiji.char);
+      }
     }
   };
-  let pending = []; // characters since the last ruby or 「｜」, not yet emitted
-  let baseMarked = false; // a 「｜」 came: `pending` was emptied there, and all of it is the base
+
+  // characters since the last ruby or 「｜」, not yet emitted
+  let pending = [];
+  // a 「｜」 came: `pending` was emptied there, and all of it is the base
+  let baseMarked = false;
+
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i];
+
     // 「｜」, or a half-width |, starts a base when a 《 follows it before any 》
     if (ch === "｜" || ch === "|") {
       const nextRubyOpen = chars.indexOf("《", i + 1);
-      if (nextRubyOpen > i && !chars.slice(i + 1, nextRubyOpen).includes("》")) {
-        emit(pending.join(""));
-        pending = [];
-        baseMarked = true;
-        continue;
+      if (nextRubyOpen > i) {
+        const upToRubyOpen = chars.slice(i + 1, nextRubyOpen);
+        const rubyClosesFirst = upToRubyOpen.includes("》");
+        if (!rubyClosesFirst) {
+          const textBefore = pending.join("");
+          emit(textBefore);
+
+          pending = [];
+          baseMarked = true;
+          continue;
+        }
       }
     }
+
     if (ch === "《") {
       const rubyClose = chars.indexOf("》", i + 1);
       if (rubyClose > i) {
-        const reading = held.shown(chars.slice(i + 1, rubyClose).join(""));
-        const baseStart = baseMarked ? 0 : baseStartByKind(pending, held);
-        emit(pending.slice(0, baseStart).join(""));
+        const readingChars = chars.slice(i + 1, rubyClose);
+        const reading = held.shown(readingChars.join(""));
+
+        let baseStart = 0;
+        if (!baseMarked) {
+          baseStart = baseStartByKind(pending, held);
+        }
+
+        const charsBeforeBase = pending.slice(0, baseStart);
+        emit(charsBeforeBase.join(""));
+
         // the reading goes into the speech in katakana: kuromoji cuts a hiragana reading poorly
         // inside a sentence (かのじ|ゃちぼうぎゃく), and the song sings katakana anyway (§5.5)
-        spoken.ruby(held.shown(pending.slice(baseStart).join("")), toKatakana(reading));
+        const baseChars = pending.slice(baseStart);
+        const base = held.shown(baseChars.join(""));
+        const readingInKatakana = toKatakana(reading);
+        spoken.ruby(base, readingInKatakana);
+
         pending = [];
         baseMarked = false;
         i = rubyClose;
         continue;
       }
     }
+
     pending.push(ch);
   }
-  emit(pending.join(""));
+
+  const textLeft = pending.join("");
+  emit(textLeft);
+
   return spoken;
 }
 
@@ -241,31 +321,67 @@ function splitAtInlineHeadings(text, level, held) {
   const bracketed = text.match(INLINE_BRACKETED);
   if (bracketed) {
     const noteStart = bracketed.index;
-    return [
-      { text: text.slice(0, noteStart), level },
-      { text: bracketed[2], level: HEADING_LEVELS[bracketed[1]] },
-      ...splitAtInlineHeadings(text.slice(noteStart + bracketed[0].length), level, held),
-    ];
+    const noteEnd = noteStart + bracketed[0].length;
+
+    const pieceBefore = {
+      text: text.slice(0, noteStart),
+      level,
+    };
+    const heading = {
+      text: bracketed[2],
+      level: HEADING_LEVELS[bracketed[1]],
+    };
+    const textAfter = text.slice(noteEnd);
+    const piecesAfter = splitAtInlineHeadings(textAfter, level, held);
+
+    return [pieceBefore, heading, ...piecesAfter];
   }
+
   const quoted = text.match(INLINE_QUOTED);
   if (quoted) {
     // the heading is the run just before the note whose display is the quoted words
     const before = text.slice(0, quoted.index);
-    const words = displayWithoutRuby(quoted[1].replace(NOTE, ""), held);
-    for (let start = before.length - 1; start >= 0; start--)
-      if (displayWithoutRuby(before.slice(start).replace(NOTE, ""), held) === words)
-        return [
-          { text: before.slice(0, start), level },
-          { text: before.slice(start), level: HEADING_LEVELS[quoted[2]] },
-          ...splitAtInlineHeadings(text.slice(quoted.index + quoted[0].length), level, held),
-        ];
+    const quotedWords = quoted[1].replace(NOTE, "");
+    const words = displayWithoutRuby(quotedWords, held);
+    const noteEnd = quoted.index + quoted[0].length;
+
+    for (let start = before.length - 1; start >= 0; start--) {
+      const run = before.slice(start);
+      const runWithoutNotes = run.replace(NOTE, "");
+      const runShown = displayWithoutRuby(runWithoutNotes, held);
+
+      if (runShown === words) {
+        const pieceBefore = {
+          text: before.slice(0, start),
+          level,
+        };
+        const heading = {
+          text: before.slice(start),
+          level: HEADING_LEVELS[quoted[2]],
+        };
+        const textAfter = text.slice(noteEnd);
+        const piecesAfter = splitAtInlineHeadings(textAfter, level, held);
+
+        return [pieceBefore, heading, ...piecesAfter];
+      }
+    }
+
     // no run before the note shows the quoted words: all the text before it is the heading
-    return [
-      { text: before, level: HEADING_LEVELS[quoted[2]] },
-      ...splitAtInlineHeadings(text.slice(quoted.index + quoted[0].length), level, held),
-    ];
+    const heading = {
+      text: before,
+      level: HEADING_LEVELS[quoted[2]],
+    };
+    const textAfter = text.slice(noteEnd);
+    const piecesAfter = splitAtInlineHeadings(textAfter, level, held);
+
+    return [heading, ...piecesAfter];
   }
-  return [{ text, level }];
+
+  const wholeText = {
+    text,
+    level,
+  };
+  return [wholeText];
 }
 
 /**
@@ -276,12 +392,21 @@ function splitAtInlineHeadings(text, level, held) {
 function piecesOf(line, level, held) {
   const pieces = [];
   let pieceStart = 0;
+
   for (const match of line.matchAll(FIGURE_NOTE)) {
-    pieces.push(...splitAtInlineHeadings(line.slice(pieceStart, match.index), level, held));
+    const textBefore = line.slice(pieceStart, match.index);
+    const piecesBefore = splitAtInlineHeadings(textBefore, level, held);
+    pieces.push(...piecesBefore);
+
     pieces.push({ figure: match });
+
     pieceStart = match.index + match[0].length;
   }
-  pieces.push(...splitAtInlineHeadings(line.slice(pieceStart), level, held));
+
+  const textLeft = line.slice(pieceStart);
+  const piecesLeft = splitAtInlineHeadings(textLeft, level, held);
+  pieces.push(...piecesLeft);
+
   return pieces;
 }
 
@@ -291,31 +416,75 @@ function piecesOf(line, level, held) {
  * lines are held in `held`.
  */
 function readHeader(lines, held, name) {
-  const headerText = (line) => displayWithoutRuby(held.hold(line).replace(NOTE, ""), held).trim();
+  const headerText = (line) => {
+    const heldLine = held.hold(line);
+    const withoutNotes = heldLine.replace(NOTE, "");
+    const shownText = displayWithoutRuby(withoutNotes, held);
+    return shownText.trim();
+  };
+
   // 1. Title and author.
   let bodyStart = 0;
   const header = [];
-  while (
-    bodyStart < lines.length &&
-    lines[bodyStart].trim() &&
-    !DASHES.test(lines[bodyStart]) &&
-    header.length < 3
-  )
-    header.push(lines[bodyStart++]);
-  let title = header[0] ? headerText(header[0]) : "";
-  const author = header[1] ? headerText(header[1]) || null : null;
-  if (header[2]) title = `${title}　${headerText(header[2])}`;
-  if (!title) title = baseName(name);
+  while (bodyStart < lines.length) {
+    const line = lines[bodyStart];
+
+    const hasText = line.trim();
+    if (!hasText) {
+      break;
+    }
+    if (DASHES.test(line)) {
+      break;
+    }
+    if (header.length >= 3) {
+      break;
+    }
+
+    header.push(line);
+    bodyStart++;
+  }
+
+  let title = "";
+  if (header[0]) {
+    title = headerText(header[0]);
+  }
+
+  let author = null;
+  if (header[1]) {
+    author = headerText(header[1]) || null;
+  }
+
+  if (header[2]) {
+    const titleThirdLine = headerText(header[2]);
+    title = `${title}　${titleThirdLine}`;
+  }
+
+  if (!title) {
+    title = baseName(name);
+  }
 
   // 2. The symbol note: the first line of dashes, if no text stands before it, to the second.
   let afterBlanks = bodyStart;
-  while (afterBlanks < lines.length && !lines[afterBlanks].trim()) afterBlanks++;
-  if (afterBlanks < lines.length && DASHES.test(lines[afterBlanks])) {
-    let secondDashes = afterBlanks + 1;
-    while (secondDashes < lines.length && !DASHES.test(lines[secondDashes])) secondDashes++;
-    bodyStart = Math.min(secondDashes + 1, lines.length);
+  while (afterBlanks < lines.length && !lines[afterBlanks].trim()) {
+    afterBlanks++;
   }
-  return { title, author, bodyStart };
+
+  const dashesComeFirst = afterBlanks < lines.length && DASHES.test(lines[afterBlanks]);
+  if (dashesComeFirst) {
+    let secondDashes = afterBlanks + 1;
+    while (secondDashes < lines.length && !DASHES.test(lines[secondDashes])) {
+      secondDashes++;
+    }
+
+    const afterSecondDashes = secondDashes + 1;
+    bodyStart = Math.min(afterSecondDashes, lines.length);
+  }
+
+  return {
+    title,
+    author,
+    bodyStart,
+  };
 }
 
 /**
@@ -325,16 +494,28 @@ function readHeader(lines, held, name) {
 function endNotesOf(lines, bodyStart, held) {
   // 3. The end notes.
   let bodyEnd = lines.length;
-  for (let i = bodyStart; i < lines.length; i++)
+  for (let i = bodyStart; i < lines.length; i++) {
     if (lines[i].startsWith("底本：")) {
       bodyEnd = i;
       break;
     }
-  const endNotes = lines
-    .slice(bodyEnd)
-    .map((line) => held.shown(held.hold(line)).replace(/\s+$/, ""))
-    .filter((line) => line.trim());
-  return { bodyEnd, endNotes };
+  }
+
+  const endNotes = [];
+  const noteLines = lines.slice(bodyEnd);
+  for (const line of noteLines) {
+    const heldLine = held.hold(line);
+    const shownLine = held.shown(heldLine);
+    const note = shownLine.replace(/\s+$/, "");
+    if (note.trim()) {
+      endNotes.push(note);
+    }
+  }
+
+  return {
+    bodyEnd,
+    endNotes,
+  };
 }
 
 /**
@@ -345,67 +526,122 @@ function endNotesOf(lines, bodyStart, held) {
  *   illustration note is dropped (D-108). `images`, when given, are the image files that exist.
  */
 export function parseAozora(text, { name = "", key = null, imageBase = null, images = null } = {}) {
-  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const withoutByteOrderMark = text.replace(/^\uFEFF/, "");
+  const lines = withoutByteOrderMark.split(/\r?\n/);
+
   const held = new HeldGaiji();
   const { title, author, bodyStart } = readHeader(lines, held, name);
   const { bodyEnd, endNotes } = endNotesOf(lines, bodyStart, held);
 
   // 5 and 7. The body, line by line.
   const builder = new BookBuilder();
-  let rangeLevel = null; // inside 「［＃ここから大見出し］」 … 「［＃ここで大見出し終わり］」
+
+  // inside 「［＃ここから大見出し］」 … 「［＃ここで大見出し終わり］」
+  let rangeLevel = null;
+
   // The figure that a caption line would name now: the block index of the figure of the last
   // non-blank line, or null when that figure was dropped (an upload, D-108); undefined when the
   // last non-blank line had no figure.
   // The next piece of text resets it; a line of notes only does not.
   let figureForCaption;
+
   for (let i = bodyStart; i < bodyEnd; i++) {
     const line = held.hold(lines[i]);
-    if (isBlank(line)) continue;
+    if (isBlank(line)) {
+      continue;
+    }
 
     const caption = line.match(CAPTION_LINE);
     if (caption && figureForCaption !== undefined) {
-      if (figureForCaption !== null)
-        builder.blocks[figureForCaption].figure.label =
-          displayWithoutRuby(caption[1].replace(NOTE, ""), held).trim() || null;
+      if (figureForCaption !== null) {
+        const figure = builder.blocks[figureForCaption].figure;
+        const captionWithoutNotes = caption[1].replace(NOTE, "");
+        const captionWords = displayWithoutRuby(captionWithoutNotes, held).trim();
+        figure.label = captionWords || null;
+      }
       figureForCaption = undefined;
       continue;
     }
 
     let level = null;
+
     const rangeNote = line.match(HEADING_FROM);
-    if (rangeNote) rangeLevel = HEADING_LEVELS[rangeNote[1]];
+    if (rangeNote) {
+      rangeLevel = HEADING_LEVELS[rangeNote[1]];
+    }
     const rangeEnds = HEADING_TO.test(line);
+
     const headingNote = line.match(HEADING_NOTE);
-    if (headingNote) level = HEADING_LEVELS[headingNote[1]];
-    else if (rangeLevel !== null) level = rangeLevel;
-    if (rangeEnds) rangeLevel = null;
+    if (headingNote) {
+      level = HEADING_LEVELS[headingNote[1]];
+    } else if (rangeLevel !== null) {
+      level = rangeLevel;
+    }
+
+    if (rangeEnds) {
+      rangeLevel = null;
+    }
 
     for (const piece of piecesOf(line, level, held)) {
       if (piece.figure) {
         const [, quoted, captioned, file] = piece.figure;
-        if (imageBase === null || (images && !images.has(file))) {
-          figureForCaption = null; // D-108: the image is not at hand, the figure is dropped
+
+        let imageAtHand = imageBase !== null;
+        if (imageAtHand && images) {
+          imageAtHand = images.has(file);
+        }
+        if (!imageAtHand) {
+          // D-108: the image is not at hand, the figure is dropped
+          figureForCaption = null;
           continue;
         }
-        figureForCaption = builder.addFigure({
-          src: imageBase + file,
-          label: captioned && quoted ? held.shown(quoted.replace(NOTE, "")) : null,
+
+        const src = imageBase + file;
+        let label = null;
+        if (captioned && quoted) {
+          const quotedWithoutNotes = quoted.replace(NOTE, "");
+          label = held.shown(quotedWithoutNotes);
+        }
+
+        const figure = {
+          src,
+          label,
           kind: "image",
-        });
+        };
+        figureForCaption = builder.addFigure(figure);
         continue;
       }
+
       const body = piece.text.replace(NOTE, "");
-      if (isBlank(body)) continue;
+      if (isBlank(body)) {
+        continue;
+      }
+
       figureForCaption = undefined;
+
       const spoken = spokenOf(body, held);
-      if (piece.level !== null) builder.addHeading(spoken, piece.level);
-      else builder.addText(spoken);
+      if (piece.level !== null) {
+        builder.addHeading(spoken, piece.level);
+      } else {
+        builder.addText(spoken);
+      }
     }
   }
-  return builder.build({ key, title, author, format: "aozora", endNotes });
+
+  const bookFields = {
+    key,
+    title,
+    author,
+    format: "aozora",
+    endNotes,
+  };
+  return builder.build(bookFields);
 }
 
 /** Hiragana to katakana (ぁ–ゖ → ァ–ヶ); everything else is kept. */
 function toKatakana(text) {
-  return text.replace(/[\u3041-\u3096]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
+  return text.replace(/[\u3041-\u3096]/g, (c) => {
+    const katakanaCode = c.charCodeAt(0) + 0x60;
+    return String.fromCharCode(katakanaCode);
+  });
 }

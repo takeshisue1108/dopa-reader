@@ -12,16 +12,25 @@ import { kindAt, pick, stepsFor } from "./melody.js";
 const ROOT_STEP = 1; // the step of a chord's root (harmony.js, noteOf)
 
 /** The progressions, each with `slots`: how many slots it lasts, filled to a whole bar. */
-export const withSlots = (progressions) =>
-  progressions.map((progression) => ({ ...progression, slots: slotsOf(progression.data) }));
+export function withSlots(progressions) {
+  return progressions.map((progression) => {
+    const slots = slotsOf(progression.data);
+    return {
+      ...progression,
+      slots,
+    };
+  });
+}
 
 /** The place `count` slots after (progression, slot), as [progression, slot]. */
 export function positionAfter(progressions, progressionIndex, slot, count) {
   slot += count;
+
   while (slot >= progressions[progressionIndex].slots) {
     slot -= progressions[progressionIndex].slots;
     progressionIndex = (progressionIndex + 1) % progressions.length;
   }
+
   return [progressionIndex, slot];
 }
 
@@ -47,37 +56,71 @@ export function positionAfter(progressions, progressionIndex, slot, count) {
 export function planBars(progressions, fragments, at, bars, options = {}) {
   const { kind = null, random = Math.random, scorePitches = null } = options;
   let previous = options.previous || null;
-  const plan = { kinds: [], used: [], notes: [], chords: [], last: previous };
+
+  const plan = {
+    kinds: [],
+    used: [],
+    notes: [],
+    chords: [],
+    last: previous,
+  };
+
   bars.forEach((bar, barIndex) => {
+    // where the bar starts in the song
+    const sentenceStart = at.bar * SLOTS_PER_BAR;
+    const slotsIntoSentence = barIndex * SLOTS_PER_BAR;
     const [progressionIndex, barStart] = positionAfter(
       progressions,
       at.progression,
-      at.bar * SLOTS_PER_BAR,
-      barIndex * SLOTS_PER_BAR,
+      sentenceStart,
+      slotsIntoSentence,
     );
-    const barKind = kind || kindAt(progressions[progressionIndex].form, barStart / SLOTS_PER_BAR);
+
+    let barKind = kind;
+    if (!barKind) {
+      const form = progressions[progressionIndex].form;
+      const barInProgression = barStart / SLOTS_PER_BAR;
+      barKind = kindAt(form, barInProgression);
+    }
+
     const fragment = pick(fragments, barKind, previous, random);
     previous = fragment;
 
     const chordNames = [];
-    const notes = stepsFor(fragment, bar.length).map((step, slotInBar) => {
+    const steps = stepsFor(fragment, bar.length);
+    const notes = steps.map((step, slotInBar) => {
       const [slotProgressionIndex, slot] = positionAfter(
         progressions,
         progressionIndex,
         barStart,
         slotInBar,
       );
-      const { chord, key } = chordAt(progressions[slotProgressionIndex].data, slot);
+      const slotProgression = progressions[slotProgressionIndex];
+      const { chord, key } = chordAt(slotProgression.data, slot);
+
       const name = chordName(chord, key);
-      if (chordNames[chordNames.length - 1] !== name) chordNames.push(name);
-      if (!scorePitches) return noteOf(chord, key, step);
-      return scorePitches[slot] ?? noteOf(chord, key, ROOT_STEP);
+      const lastName = chordNames[chordNames.length - 1];
+      if (lastName !== name) {
+        chordNames.push(name);
+      }
+
+      if (!scorePitches) {
+        return noteOf(chord, key, step);
+      }
+
+      const scorePitch = scorePitches[slot];
+      if (scorePitch === null || scorePitch === undefined) {
+        return noteOf(chord, key, ROOT_STEP);
+      }
+      return scorePitch;
     });
+
     plan.kinds.push(barKind);
     plan.used.push(fragment);
     plan.notes.push(notes);
     plan.chords.push(chordNames);
   });
+
   plan.last = previous;
   return plan;
 }

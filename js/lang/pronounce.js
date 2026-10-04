@@ -14,9 +14,18 @@
 import { arpabetToIpa, withEd, withIng, withS } from "./ipa.js";
 import { kanaOfIpa } from "./kana.js";
 
-const MIN_BASE = 3; // letters: a shorter rest (ad-s, th-ing) is not taken for the word
+// letters: a shorter rest (ad-s, th-ing) is not taken for the word
+const MIN_BASE = 3;
+
 // the word's last letter may have been doubled before the ending (knotted)
-const withoutDoubled = (stem) => (/([b-df-hj-np-tv-z])\1$/.test(stem) ? stem.slice(0, -1) : null);
+function withoutDoubled(stem) {
+  const endsDoubled = /([b-df-hj-np-tv-z])\1$/.test(stem);
+  if (!endsDoubled) {
+    return null;
+  }
+  return stem.slice(0, -1);
+}
+
 // Each regular ending with the words it may have been put on (the letters before it, as written)
 // and what it adds to the pronunciation.
 const ENDINGS = [
@@ -60,7 +69,10 @@ const LETTER_IPA = {
 const TAG_OF = { V: "Verb", N: "Noun", VBD: "PastTense", VBN: "Participle", ADJ: "Adjective" };
 const WORD = /[A-Za-z]+(?:['’][A-Za-z]+)*/g; // a word, without its hyphens
 
-const plain = (word) => word.toLowerCase().replaceAll("’", "'");
+function plain(word) {
+  const lowerCase = word.toLowerCase();
+  return lowerCase.replaceAll("’", "'");
+}
 
 /**
  * The English pronunciations of the site. `table` is the dictionary { word: IPA }, a plain
@@ -78,59 +90,122 @@ const plain = (word) => word.toLowerCase().replaceAll("’", "'");
 export function createEnglish({ table, homographs = {} }) {
   const learned = new Map(); // word -> IPA, written by the model
   const has = (object, key) => Object.hasOwn(object, key);
-  const known = (word) => (has(table, word) ? table[word] : learned.get(word));
+
+  const known = (word) => {
+    if (has(table, word)) {
+      return table[word];
+    }
+    return learned.get(word);
+  };
 
   /** One word without hyphens, in lower case: steps 1 to 3 of the header. */
   function ipaOfPlain(word, tags) {
     if (tags && has(homographs, word)) {
       const [whenTagged, otherwise, pos] = homographs[word];
-      return tags.includes(TAG_OF[pos]) ? whenTagged : otherwise;
+      const tagOfPos = TAG_OF[pos];
+      if (tags.includes(tagOfPos)) {
+        return whenTagged;
+      }
+      return otherwise;
     }
+
     const direct = known(word);
-    if (direct !== undefined) return direct;
+    if (direct !== undefined) {
+      return direct;
+    }
+
     if (word.endsWith("'s")) {
-      const owner = ipaOfPlain(word.slice(0, -2), null);
-      return owner === undefined ? undefined : withS(owner);
+      const ownerWord = word.slice(0, -2);
+      const owner = ipaOfPlain(ownerWord, null);
+      if (owner === undefined) {
+        return undefined;
+      }
+      return withS(owner);
     }
+
     for (const { ending, bases, add } of ENDINGS) {
-      if (!word.endsWith(ending)) continue;
-      for (const base of bases(word.slice(0, -ending.length)))
-        if (base && base.length >= MIN_BASE && known(base) !== undefined) return add(known(base));
+      if (!word.endsWith(ending)) {
+        continue;
+      }
+
+      const stem = word.slice(0, -ending.length);
+      for (const base of bases(stem)) {
+        const longEnough = base && base.length >= MIN_BASE;
+        if (longEnough && known(base) !== undefined) {
+          const baseIpa = known(base);
+          return add(baseIpa);
+        }
+      }
     }
+
     return undefined;
   }
 
   function ipaOf(word, tags = null) {
-    if (!/[a-z]/.test(word)) {
-      const names = [...word.toLowerCase()].map((letter) => LETTER_IPA[letter]).filter(Boolean);
-      return names.length ? names.join(" ") : undefined;
+    const hasLowerCase = /[a-z]/.test(word);
+    if (!hasLowerCase) {
+      const letters = [...word.toLowerCase()];
+      const namesOrNothing = letters.map((letter) => LETTER_IPA[letter]);
+      const names = namesOrNothing.filter(Boolean);
+
+      if (!names.length) {
+        return undefined;
+      }
+      return names.join(" ");
     }
-    const parts = plain(word)
-      .split("-")
-      .map((part) => ipaOfPlain(part, tags));
-    return parts.includes(undefined) ? undefined : parts.join(" ");
+
+    const written = plain(word);
+    const writtenParts = written.split("-");
+    const parts = writtenParts.map((part) => ipaOfPlain(part, tags));
+
+    if (parts.includes(undefined)) {
+      return undefined;
+    }
+    return parts.join(" ");
   }
 
   return {
     ipaOf,
+
     kanaOf(word, tags = null) {
       const ipa = ipaOf(word, tags);
-      return ipa === undefined ? undefined : kanaOfIpa(ipa);
+      if (ipa === undefined) {
+        return undefined;
+      }
+      return kanaOfIpa(ipa);
     },
+
     unknownWords(text) {
       const unknown = new Set();
-      for (const [written] of text.normalize("NFKC").matchAll(WORD)) {
-        if (!/[a-z]/.test(written)) continue; // capitals only: the letters' names
+      const normalized = text.normalize("NFKC");
+
+      for (const [written] of normalized.matchAll(WORD)) {
+        if (!/[a-z]/.test(written)) {
+          continue; // capitals only: the letters' names
+        }
+
         const word = plain(written);
-        if (ipaOfPlain(word, null) !== undefined) continue;
+        if (ipaOfPlain(word, null) !== undefined) {
+          continue;
+        }
+
         // a possessive of an unknown word: the model reads the word, and the 's is added here
-        unknown.add(word.endsWith("'s") ? word.slice(0, -2) : word);
+        if (word.endsWith("'s")) {
+          const owner = word.slice(0, -2);
+          unknown.add(owner);
+        } else {
+          unknown.add(word);
+        }
       }
+
       return [...unknown];
     },
+
     learn(word, arpabet) {
       const ipa = arpabetToIpa(arpabet);
-      if (ipa) learned.set(word, ipa);
+      if (ipa) {
+        learned.set(word, ipa);
+      }
     },
   };
 }

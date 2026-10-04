@@ -12,24 +12,36 @@
 // so it is exactly zero on a straight.
 import { ladderCell } from "./pixel.js";
 
-export const SPEED = 0.22; // z units per tick
+// z units per tick
+export const SPEED = 0.22;
 export const ROAD_HALF_WIDTH = 110;
 const COURSE = [0, 0, 1, 1, 0, 0, -1, -1, 0, 1, 0, 0, -1, 0];
-const SEGMENT = 26; // z units per segment (about 4 s)
-const Z_MAX = 64, // how far ahead the road is worked out, in z units
-  DZ = 0.25; // the step of that table
-const BUILDINGS = 28, // how many stand along the road at once
-  BUILDING_GAP = 1.1; // the depth from one to the next
+// z units per segment (about 4 s)
+const SEGMENT = 26;
+// how far ahead the road is worked out, in z units
+const Z_MAX = 64;
+// the step of that table
+const DZ = 0.25;
+// how many stand along the road at once
+const BUILDINGS = 28;
+// the depth from one to the next
+const BUILDING_GAP = 1.1;
 
 /** The curvature of the course at a travelled depth: it eases into the next segment in the last
  * 30% of each segment. */
 export function curvatureAt(depth) {
-  const index = Math.floor(depth / SEGMENT),
-    within = depth / SEGMENT - index,
-    here = COURSE[index % COURSE.length],
-    next = COURSE[(index + 1) % COURSE.length];
-  const progress = Math.max(0, Math.min(1, (within - 0.7) / 0.3)),
-    eased = progress * progress * (3 - 2 * progress);
+  const index = Math.floor(depth / SEGMENT);
+  const within = depth / SEGMENT - index;
+
+  const here = COURSE[index % COURSE.length];
+  const nextIndex = (index + 1) % COURSE.length;
+  const next = COURSE[nextIndex];
+
+  const intoLastPart = (within - 0.7) / 0.3;
+  const atMostOne = Math.min(1, intoLastPart);
+  const progress = Math.max(0, atMostOne);
+  const eased = progress * progress * (3 - 2 * progress);
+
   return here + (next - here) * eased;
 }
 
@@ -38,34 +50,52 @@ export class Road {
    * [{img, meta}], each a ladder of sizes (ladderCell in pixel.js). */
   constructor(glass, buildingSprites) {
     this.centerX = glass.x + glass.w / 2;
-    this.horizonY = glass.y + Math.round(glass.h * 0.36);
-    this.G = 56; // the camera's height above the ground
+
+    const horizonBelowGlassTop = Math.round(glass.h * 0.36);
+    this.horizonY = glass.y + horizonBelowGlassTop;
+
+    // the camera's height above the ground
+    this.G = 56;
     this.sprites = buildingSprites;
     this.travel = 0;
-    this.tilt = 0; // the cockpit's lean: the curvature where it is, -1 to 1, followed with a lag
-    this.swayX = 0; // Elena's sideways sway, in pixels
+    // the cockpit's lean: the curvature where it is, -1 to 1, followed with a lag
+    this.tilt = 0;
+    // Elena's sideways sway, in pixels
+    this.swayX = 0;
     this.swayV = 0;
+
     // the road's lateral offset at each depth of the table
-    this.offsets = new Float32Array(Math.ceil((Z_MAX - 1) / DZ) + 2);
+    const tableSteps = Math.ceil((Z_MAX - 1) / DZ);
+    this.offsets = new Float32Array(tableSteps + 2);
+
     // each building: side (-1 left, 1 right), d (its depth z), v (which sprite), off (how far
     // it stands back from the road's edge: 40 and this, so 40 to 79, at z = 1)
-    this.buildings = Array.from({ length: BUILDINGS }, (_, k) => ({
-      side: k % 2 ? 1 : -1,
-      d: 1.2 + k * BUILDING_GAP,
-      v: k % Math.max(1, buildingSprites.length),
-      off: (k * 37) % 40,
-    }));
+    this.buildings = Array.from({ length: BUILDINGS }, (_, k) => {
+      const side = k % 2 ? 1 : -1;
+      const spriteCount = Math.max(1, buildingSprites.length);
+
+      return {
+        side,
+        d: 1.2 + k * BUILDING_GAP,
+        v: k % spriteCount,
+        off: (k * 37) % 40,
+      };
+    });
+
     this.buildTable();
   }
 
   /** Fill `offsets`: the road's lateral offset at each depth ahead, the curvature summed twice. */
   buildTable() {
-    let offset = 0,
-      slope = 0;
+    let offset = 0;
+    let slope = 0;
+
     for (let i = 0; i < this.offsets.length; i++) {
       this.offsets[i] = offset;
+
       const z = 1 + i * DZ;
-      slope += 2.8 * curvatureAt(this.travel + z) * DZ;
+      const curvature = curvatureAt(this.travel + z);
+      slope += 2.8 * curvature * DZ;
       offset += slope * DZ;
     }
   }
@@ -75,85 +105,139 @@ export class Road {
     const step = SPEED * factor;
     this.travel += step;
     this.buildTable();
-    const curve = curvatureAt(this.travel + 1); // the curvature where the cockpit is
+
+    // the curvature where the cockpit is
+    const curve = curvatureAt(this.travel + 1);
     // standing still, it does not tilt
-    this.tilt += (curve * Math.min(1, factor) - this.tilt) * 0.15;
+    const wantedTilt = curve * Math.min(1, factor);
+    this.tilt += (wantedTilt - this.tilt) * 0.15;
+
     for (const building of this.buildings) {
       building.d -= step;
+
       if (building.d < 0.9) {
         building.d += BUILDINGS * BUILDING_GAP;
-        building.v = (building.v + 3) % Math.max(1, this.sprites.length);
+
+        const spriteCount = Math.max(1, this.sprites.length);
+        building.v = (building.v + 3) % spriteCount;
       }
     }
+
     // Elena's sway: a damped spring pulled to the outside of the curve
-    this.swayV += (-this.tilt * 9 - this.swayX) * 0.06;
+    const pull = -this.tilt * 9 - this.swayX;
+    this.swayV += pull * 0.06;
     this.swayV *= 0.86;
     this.swayX += this.swayV;
   }
 
   /** The screen x of the road's center at depth z. */
   roadX(z) {
-    const place = Math.max(0, Math.min(this.offsets.length - 2, (z - 1) / DZ)),
-      below = Math.floor(place),
-      share = place - below;
-    return (
-      this.centerX +
-      (this.offsets[below] * (1 - share) + this.offsets[below + 1] * share) / Math.max(1, z)
-    );
+    const lastPlace = this.offsets.length - 2;
+    const wantedPlace = (z - 1) / DZ;
+    const atMostLast = Math.min(lastPlace, wantedPlace);
+    const place = Math.max(0, atMostLast);
+
+    const below = Math.floor(place);
+    const share = place - below;
+
+    const partBelow = this.offsets[below] * (1 - share);
+    const partAbove = this.offsets[below + 1] * share;
+    const offsetAtGlass = partBelow + partAbove;
+
+    const depth = Math.max(1, z);
+    return this.centerX + offsetAtGlass / depth;
   }
+
   /** A point on the ground, X to the side of the road's center at depth z. */
   project(X, z) {
-    return { x: this.roadX(z) + X / z, y: this.horizonY + this.G / z };
+    const x = this.roadX(z) + X / z;
+    const y = this.horizonY + this.G / z;
+    return { x, y };
   }
+
   /** A point H above the ground. */
   project3(X, H, z) {
-    return { x: this.roadX(z) + X / z, y: this.horizonY + (this.G - H) / z };
+    const x = this.roadX(z) + X / z;
+    const y = this.horizonY + (this.G - H) / z;
+    return { x, y };
   }
 
   /** The road, row by row: alternating bands rush toward the glass. */
   drawGround(ctx) {
     for (let y = this.horizonY + 1; y < 240; y++) {
-      const z = this.G / (y - this.horizonY),
-        center = this.roadX(z),
-        halfWidth = ROAD_HALF_WIDTH / z,
-        band = Math.floor((z + this.travel) * 1.2) % 2;
-      ctx.fillStyle = band ? "#c4c4ca" : "#b8b8c0"; // light gray beside the road (ED D-138)
-      ctx.fillRect(0, y, 426, 1); // sidewalk
+      const z = this.G / (y - this.horizonY);
+      const center = this.roadX(z);
+      const halfWidth = ROAD_HALF_WIDTH / z;
+      const band = Math.floor((z + this.travel) * 1.2) % 2;
+
+      // sidewalk: light gray beside the road (ED D-138)
+      ctx.fillStyle = band ? "#c4c4ca" : "#b8b8c0";
+      ctx.fillRect(0, y, 426, 1);
+
+      // asphalt
+      const asphaltLeft = Math.round(center - halfWidth);
+      const asphaltWidth = Math.round(halfWidth * 2);
       ctx.fillStyle = band ? "#5a5560" : "#524d58";
-      ctx.fillRect(Math.round(center - halfWidth), y, Math.round(halfWidth * 2), 1); // asphalt
+      ctx.fillRect(asphaltLeft, y, asphaltWidth, 1);
+
+      // rumble strips
       const rumble = Math.max(1, Math.round(10 / z));
-      ctx.fillStyle = band ? "#e8e4ee" : "#c33142"; // rumble strips
-      ctx.fillRect(Math.round(center - halfWidth - rumble), y, rumble, 1);
-      ctx.fillRect(Math.round(center + halfWidth), y, rumble, 1);
+      const leftStripLeft = Math.round(center - halfWidth - rumble);
+      const rightStripLeft = Math.round(center + halfWidth);
+      ctx.fillStyle = band ? "#e8e4ee" : "#c33142";
+      ctx.fillRect(leftStripLeft, y, rumble, 1);
+      ctx.fillRect(rightStripLeft, y, rumble, 1);
+
       if (band) {
-        ctx.fillStyle = "#f4f1ff"; // center line
-        ctx.fillRect(Math.round(center - Math.max(1, 3 / z)), y, Math.max(1, Math.round(6 / z)), 1);
+        // center line
+        const lineHalfWidth = Math.max(1, 3 / z);
+        const lineLeft = Math.round(center - lineHalfWidth);
+        const lineWidth = Math.max(1, Math.round(6 / z));
+        ctx.fillStyle = "#f4f1ff";
+        ctx.fillRect(lineLeft, y, lineWidth, 1);
       }
     }
   }
 
   /** The buildings on both sides, the farthest first. */
   drawBuildings(ctx) {
-    if (!this.sprites.length) return;
-    const list = this.buildings
-      .filter((building) => building.d > 0.9)
-      .sort((one, other) => other.d - one.d);
+    if (!this.sprites.length) {
+      return;
+    }
+
+    const list = this.buildings.filter((building) => building.d > 0.9);
+    list.sort((one, other) => other.d - one.d);
+
     for (const building of list) {
-      const sprite = this.sprites[building.v],
-        cell = ladderCell(sprite.meta, (sprite.meta.H * 1.6) / building.d);
-      if (cell.h < 6) continue;
-      const left =
-          this.roadX(building.d) +
-          (building.side * (ROAD_HALF_WIDTH + 40 + building.off)) / building.d,
-        footY = this.horizonY + this.G / building.d;
+      const sprite = this.sprites[building.v];
+      const wantedHeight = (sprite.meta.H * 1.6) / building.d;
+      const cell = ladderCell(sprite.meta, wantedHeight);
+      if (cell.h < 6) {
+        continue;
+      }
+
+      const besideRoad = ROAD_HALF_WIDTH + 40 + building.off;
+      const besideRoadOnScreen = (building.side * besideRoad) / building.d;
+      const left = this.roadX(building.d) + besideRoadOnScreen;
+      const footY = this.horizonY + this.G / building.d;
+
+      // a building on the left stands with its right edge at that place
+      let drawLeft = left;
+      if (building.side < 0) {
+        drawLeft = left - cell.w;
+      }
+
+      const sheetTop = sprite.meta.H - cell.h;
+      const screenLeft = Math.round(drawLeft);
+      const screenTop = Math.round(footY - cell.h);
       ctx.drawImage(
         sprite.img,
         cell.x,
-        sprite.meta.H - cell.h,
+        sheetTop,
         cell.w,
         cell.h,
-        Math.round(building.side < 0 ? left - cell.w : left),
-        Math.round(footY - cell.h),
+        screenLeft,
+        screenTop,
         cell.w,
         cell.h,
       );

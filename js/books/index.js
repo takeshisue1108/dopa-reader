@@ -31,9 +31,33 @@ export function parseText(
   { name = "", format, key = null, imageBase = null, images = null } = {},
 ) {
   const chosen = format ?? formatOf(name, text);
-  if (chosen === "aozora") return parseAozora(text, { name, key, imageBase, images });
-  if (chosen === "text") return parseTextFile(text, { name, key });
-  if (chosen === "markdown") return parseMarkdown(text, { name, key });
+
+  if (chosen === "aozora") {
+    const aozoraOptions = {
+      name,
+      key,
+      imageBase,
+      images,
+    };
+    return parseAozora(text, aozoraOptions);
+  }
+
+  if (chosen === "text") {
+    const textOptions = {
+      name,
+      key,
+    };
+    return parseTextFile(text, textOptions);
+  }
+
+  if (chosen === "markdown") {
+    const markdownOptions = {
+      name,
+      key,
+    };
+    return parseMarkdown(text, markdownOptions);
+  }
+
   throw new BookError(MESSAGES.format, "format");
 }
 
@@ -44,10 +68,33 @@ export function parseText(
  * @returns {Promise<object>} the book model of §5.1
  */
 export async function parseFile({ name, bytes, key = null, imageBase = null, images = null }) {
-  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (isPdf(name, data)) return parsePdf({ name, bytes: data, key });
+  let data = bytes;
+  if (!(bytes instanceof Uint8Array)) {
+    data = new Uint8Array(bytes);
+  }
+
+  if (isPdf(name, data)) {
+    const pdfFile = {
+      name,
+      bytes: data,
+      key,
+    };
+    return parsePdf(pdfFile);
+  }
+
   const extension = extensionOf(name);
-  if (extension !== "txt" && extension !== "md") throw new BookError(MESSAGES.format, "format");
+  const isTextFile = extension === "txt" || extension === "md";
+  if (!isTextFile) {
+    throw new BookError(MESSAGES.format, "format");
+  }
+
   const { text } = decode(data);
-  return parseText(text, { name, key, imageBase, images });
+
+  const textOptions = {
+    name,
+    key,
+    imageBase,
+    images,
+  };
+  return parseText(text, textOptions);
 }

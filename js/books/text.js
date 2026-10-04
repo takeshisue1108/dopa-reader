@@ -14,22 +14,55 @@ import { endsSentence, isBlank } from "./sentences.js";
  * @param {string[]} lines
  */
 export function isHardWrapped(lines) {
-  const nonBlank = lines.map((line) => line.trimEnd()).filter((line) => line.trim());
-  if (!nonBlank.length) return false;
-  const unfinished = nonBlank.filter((line) => !endsSentence(line)).length;
+  const nonBlank = [];
+  for (const line of lines) {
+    const withoutSpaceAtEnd = line.trimEnd();
+    if (withoutSpaceAtEnd.trim()) {
+      nonBlank.push(withoutSpaceAtEnd);
+    }
+  }
+  if (!nonBlank.length) {
+    return false;
+  }
+
+  let unfinished = 0;
+  for (const line of nonBlank) {
+    if (!endsSentence(line)) {
+      unfinished++;
+    }
+  }
+
   const lengths = nonBlank.map((line) => Array.from(line).length);
+
   const counts = new Map();
-  for (const length of lengths) counts.set(length, (counts.get(length) ?? 0) + 1);
+  for (const length of lengths) {
+    const countSoFar = counts.get(length) ?? 0;
+    counts.set(length, countSoFar + 1);
+  }
+
   // the most common length; of two equally common ones, the longer
-  let commonLength = 0,
-    commonCount = -1;
-  for (const [length, count] of counts)
-    if (count > commonCount || (count === commonCount && length > commonLength)) {
+  let commonLength = 0;
+  let commonCount = -1;
+  for (const [length, count] of counts) {
+    const moreCommon = count > commonCount;
+    const asCommonAndLonger = count === commonCount && length > commonLength;
+    if (moreCommon || asCommonAndLonger) {
       commonLength = length;
       commonCount = count;
     }
-  const nearCommon = lengths.filter((length) => Math.abs(length - commonLength) <= 2).length;
-  return unfinished / nonBlank.length > 0.4 && nearCommon / nonBlank.length > 0.3;
+  }
+
+  let nearCommon = 0;
+  for (const length of lengths) {
+    const distance = Math.abs(length - commonLength);
+    if (distance <= 2) {
+      nearCommon++;
+    }
+  }
+
+  const unfinishedShare = unfinished / nonBlank.length;
+  const nearCommonShare = nearCommon / nonBlank.length;
+  return unfinishedShare > 0.4 && nearCommonShare > 0.3;
 }
 
 /**
@@ -38,32 +71,57 @@ export function isHardWrapped(lines) {
  * @param {{name?: string, key?: string|null}} options
  */
 export function parseTextFile(text, { name = "", key = null } = {}) {
-  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const withoutByteOrderMark = text.replace(/^\uFEFF/, "");
+  const lines = withoutByteOrderMark.split(/\r?\n/);
   const builder = new BookBuilder();
 
   if (!isHardWrapped(lines)) {
     for (const line of lines) {
-      if (isBlank(line)) continue;
-      builder.addText(plainSpoken(line.trim()));
+      if (isBlank(line)) {
+        continue;
+      }
+      const trimmed = line.trim();
+      const spoken = plainSpoken(trimmed);
+      builder.addText(spoken);
     }
   } else {
-    let pending = []; // the lines of the block being joined, not yet a block
-    let blankSince = false; // a blank line came after the last line of `pending`
+    // the lines of the block being joined, not yet a block
+    let pending = [];
+
+    // a blank line came after the last line of `pending`
+    let blankSince = false;
+
     const flush = () => {
       builder.addParagraph(pending);
       pending = [];
     };
+
     for (const line of lines) {
       if (isBlank(line)) {
         blankSince = true;
         continue;
       }
+
       const startsVisualBlock = blankSince || /^[\s　]/.test(line);
-      if (pending.length && endsSentence(pending[pending.length - 1]) && startsVisualBlock) flush();
+      if (pending.length) {
+        const lastLine = pending[pending.length - 1];
+        if (endsSentence(lastLine) && startsVisualBlock) {
+          flush();
+        }
+      }
+
       pending.push(line);
       blankSince = false;
     }
     flush();
   }
-  return builder.build({ key, title: baseName(name), author: null, format: "text" });
+
+  const title = baseName(name);
+  const bookFields = {
+    key,
+    title,
+    author: null,
+    format: "text",
+  };
+  return builder.build(bookFields);
 }

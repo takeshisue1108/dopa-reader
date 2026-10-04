@@ -8,60 +8,99 @@ import * as progress from "../loading.js";
 const BASE = "data/sing/instruments/";
 const INDEX = "daylife.json"; // made by tools/sing/build_instruments.py
 
-let context = null, // the AudioContext that decodes the sheets
-  // daylife.json: for each program its sheet, its range of pitches and its window; the drum kit
-  index = null;
+// the AudioContext that decodes the sheets
+let context = null;
+
+// daylife.json: for each program its sheet, its range of pitches and its window; the drum kit
+let index = null;
+
 const sheets = new Map(); // program number as a string ("30"), or "drums" -> AudioBuffer
 const loading = new Map(); // the same -> Promise
 let settled = 0; // the sheets that have arrived or failed
 
 /** Tell the charging display (SPEC_dopa v3.15 §6.2a): the index is one file, and each sheet one. */
 function tellProgress() {
-  const asked = index ? Object.keys(index.programs).length + (index.drums ? 1 : 0) : 0;
-  progress.count("instruments", 1 + settled, 1 + asked);
+  let asked = 0;
+  if (index) {
+    const programSheets = Object.keys(index.programs).length;
+    const drumSheets = index.drums ? 1 : 0;
+    asked = programSheets + drumSheets;
+  }
+
+  const arrivedFiles = 1 + settled;
+  const askedFiles = 1 + asked;
+  progress.count("instruments", arrivedFiles, askedFiles);
 }
 
 /** Take the AudioContext and load the index (once). Returns the index, or null when this machine
  * has no instrument files: the song is then sung without accompaniment. */
 export async function init(audioContext) {
   context = audioContext;
+
   if (!index) {
     progress.count("instruments", 0, 1);
-    const response = await fetch(BASE + INDEX).catch(() => null);
-    index = response && response.ok ? await response.json() : null;
+
+    const indexUrl = BASE + INDEX;
+    const response = await fetch(indexUrl).catch(() => null);
+
+    if (response && response.ok) {
+      index = await response.json();
+    } else {
+      index = null;
+    }
+
     tellProgress();
   }
+
   return index;
 }
 
 /** Have every sheet loaded; resolves when all are. A sheet that cannot be fetched stays silent. */
 export function ensure() {
-  if (!index) return Promise.resolve();
+  if (!index) {
+    return Promise.resolve();
+  }
+
   const entries = Object.entries(index.programs);
-  if (index.drums) entries.push(["drums", index.drums]);
+  if (index.drums) {
+    const drumsEntry = ["drums", index.drums];
+    entries.push(drumsEntry);
+  }
+
   const jobs = [];
   for (const [name, entry] of entries) {
-    if (sheets.has(name)) continue;
-    if (!loading.has(name)) {
-      loading.set(
-        name,
-        fetch(BASE + entry.file)
-          .then((response) => {
-            if (!response.ok) throw new Error(`instruments: ${entry.file} ${response.status}`);
-            return response.arrayBuffer();
-          })
-          .then((data) => context.decodeAudioData(data))
-          .then((buffer) => sheets.set(name, buffer))
-          .catch((error) => console.warn(String(error)))
-          .finally(() => {
-            loading.delete(name);
-            settled++;
-            tellProgress();
-          }),
-      );
+    if (sheets.has(name)) {
+      continue;
     }
-    jobs.push(loading.get(name));
+
+    if (!loading.has(name)) {
+      const sheetUrl = BASE + entry.file;
+
+      const job = fetch(sheetUrl)
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`instruments: ${entry.file} ${response.status}`);
+          }
+          return response.arrayBuffer();
+        })
+        .then((data) => context.decodeAudioData(data))
+        .then((buffer) => sheets.set(name, buffer))
+        .catch((error) => {
+          const message = String(error);
+          return console.warn(message);
+        })
+        .finally(() => {
+          loading.delete(name);
+          settled++;
+          tellProgress();
+        });
+      loading.set(name, job);
+    }
+
+    const pendingJob = loading.get(name);
+    jobs.push(pendingJob);
   }
+
   return Promise.all(jobs);
 }
 
@@ -74,13 +113,24 @@ export function ensure() {
 export function note(program, midi) {
   const entry = index?.programs[String(program)];
   const buffer = sheets.get(String(program));
-  if (!entry || !buffer) return null;
+  if (!entry || !buffer) {
+    return null;
+  }
+
   let pitch = midi;
-  while (pitch < entry.lo) pitch += 12;
-  while (pitch > entry.hi) pitch -= 12;
+  while (pitch < entry.lo) {
+    pitch += 12;
+  }
+  while (pitch > entry.hi) {
+    pitch -= 12;
+  }
+
+  // which window of the sheet, counted from 0
+  const windowNumber = pitch - entry.lo;
+
   return {
     buffer,
-    window: (pitch - entry.lo) * entry.window,
+    window: windowNumber * entry.window,
     start: index.start,
     length: entry.window,
     midi: pitch,
@@ -93,22 +143,41 @@ export function note(program, midi) {
 export function hit(name) {
   const kit = index?.drums;
   const buffer = sheets.get("drums");
-  const place = kit ? kit.hits.indexOf(name) : -1;
-  if (!buffer || place < 0) return null;
+
+  let place = -1;
+  if (kit) {
+    place = kit.hits.indexOf(name);
+  }
+  if (!buffer || place < 0) {
+    return null;
+  }
+
+  let hitSeconds = kit.window;
+  if (kit.lengths) {
+    hitSeconds = kit.lengths[place];
+  }
+  const roomSeconds = kit.window - index.start - 0.03;
+  const soundingSeconds = Math.min(hitSeconds, roomSeconds);
+
   return {
     buffer,
     window: place * kit.window,
     start: index.start,
-    length: Math.min(
-      kit.lengths ? kit.lengths[place] : kit.window,
-      kit.window - index.start - 0.03,
-    ),
+    length: soundingSeconds,
   };
 }
 
 /** The index of the instruments (null when there is none). */
 export const info = () => index;
+
 /** How many sheets are in memory. */
 export const loaded = () => sheets.size;
+
 /** How many bytes the sheets in memory take, decoded (4 bytes a sample). */
-export const bytes = () => [...sheets.values()].reduce((sum, sheet) => sum + sheet.length * 4, 0);
+export function bytes() {
+  let sum = 0;
+  for (const sheet of sheets.values()) {
+    sum += sheet.length * 4;
+  }
+  return sum;
+}

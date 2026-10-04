@@ -43,6 +43,7 @@ export const S = {
   gear: "ギア",
   nextBlast: "次の爆発：{tier}",
   creditVoice: "歌声：VOICEVOX:No.7",
+  creditEnglishVoice: "英語の歌声：Kokoro-82M（Apache-2.0）",
   creditMusic: "伴奏：FluidR3_GM（Frank Wen ほか）（CC BY 3.0）",
   licenses: "使用ライブラリと権利表記",
   chars: "{n} 文字",
@@ -50,7 +51,12 @@ export const S = {
 
 /** A string with its `{name}` places filled. */
 export function fill(text, values = {}) {
-  return text.replace(/\{(\w+)\}/g, (whole, name) =>
-    name in values ? String(values[name]) : whole,
-  );
+  return text.replace(/\{(\w+)\}/g, (whole, name) => {
+    if (name in values) {
+      return String(values[name]);
+    }
+
+    // a place with no value stays as it is written
+    return whole;
+  });
 }

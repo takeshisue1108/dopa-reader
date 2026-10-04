@@ -12,36 +12,66 @@ export const SLOTS_PER_BAR = 8;
  */
 export function barsOf(phrases) {
   const bars = [];
-  let openBar = null; // a bar of joined short phrases that may still take more (D-06)
+
+  // a bar of joined short phrases that may still take more (D-06)
+  let openBar = null;
+
   const closeBar = () => {
     if (openBar) {
       bars.push(openBar);
       openBar = null;
     }
   };
+
   for (const phrase of phrases) {
     let remaining = phrase.morae;
+
     if (remaining.length <= 4) {
-      if (openBar && openBar.length + remaining.length <= SLOTS_PER_BAR)
-        openBar = openBar.concat(remaining); // joined, no rest between (Q-23)
-      else {
+      let fitsOpenBar = false;
+      if (openBar) {
+        const joinedLength = openBar.length + remaining.length;
+        fitsOpenBar = joinedLength <= SLOTS_PER_BAR;
+      }
+
+      if (fitsOpenBar) {
+        // joined, no rest between (Q-23)
+        openBar = openBar.concat(remaining);
+      } else {
         closeBar();
         openBar = remaining.slice();
       }
     } else {
       closeBar();
+
+      // D-18: full bars first
       while (remaining.length > SLOTS_PER_BAR) {
-        bars.push(remaining.slice(0, SLOTS_PER_BAR));
+        const fullBar = remaining.slice(0, SLOTS_PER_BAR);
+        bars.push(fullBar);
         remaining = remaining.slice(SLOTS_PER_BAR);
-      } // D-18: full bars first
-      if (remaining.length <= 4) openBar = remaining.slice();
-      else bars.push(remaining.slice()); // 5 to 8 morae: a bar of its own (D-17, D-18)
+      }
+
+      if (remaining.length <= 4) {
+        openBar = remaining.slice();
+      } else {
+        // 5 to 8 morae: a bar of its own (D-17, D-18)
+        const ownBar = remaining.slice();
+        bars.push(ownBar);
+      }
     }
-    if (phrase.pause) closeBar(); // the rests fall where the text pauses (Q-23)
+
+    // the rests fall where the text pauses (Q-23)
+    if (phrase.pause) {
+      closeBar();
+    }
   }
+
   closeBar();
   return bars;
 }
 
 /** A bar as "1" for each sung slot and "0" for each rest: 5 morae -> "11111000". */
-export const rhythmOf = (bar) => "1".repeat(bar.length) + "0".repeat(SLOTS_PER_BAR - bar.length);
+export function rhythmOf(bar) {
+  const sungSlots = "1".repeat(bar.length);
+  const restSlots = "0".repeat(SLOTS_PER_BAR - bar.length);
+  return sungSlots + restSlots;
+}

@@ -25,28 +25,39 @@ const FULL_URL = /^https?:\/\//i;
 /** Markdown inline syntax to plain display text (adapter clean_inline). Images are taken out by
  * the caller before: here `![a](b)` would come out as `!a`. */
 export function cleanInline(text) {
-  return text
-    .replace(/\[\^[^\]]+\]/g, "")
-    .replace(/\[([^\]]+)\]\((?:[^)]+)\)/g, "$1")
-    .replace(/`([^`]*)`/g, "$1")
-    .replace(/(\*\*\*|___)(.+?)\1/g, "$2")
-    .replace(/(\*\*|__)(.+?)\1/g, "$2")
-    .replace(/(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])/g, "$1")
-    .replace(/(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?![\w_])/g, "$1")
-    .replace(/<[^>]+>/g, "")
-    .replace(/\\([\\`*_{}[\]()#+\-.!,&'"|<>~])/g, "$1")
-    .replace(/[ \t]+/g, " ")
-    .trim();
+  // footnote marks go; a link leaves its words; code marks go
+  const withoutFootnoteMarks = text.replace(/\[\^[^\]]+\]/g, "");
+  const withLinkWords = withoutFootnoteMarks.replace(/\[([^\]]+)\]\((?:[^)]+)\)/g, "$1");
+  const withoutCodeMarks = withLinkWords.replace(/`([^`]*)`/g, "$1");
+
+  // the marks of emphasis go, the longest first: *** and ___, ** and __, then * and _
+  const withoutBoldItalic = withoutCodeMarks.replace(/(\*\*\*|___)(.+?)\1/g, "$2");
+  const withoutBold = withoutBoldItalic.replace(/(\*\*|__)(.+?)\1/g, "$2");
+  const withoutStarItalic = withoutBold.replace(/(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])/g, "$1");
+  const withoutItalic = withoutStarItalic.replace(/(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?![\w_])/g, "$1");
+
+  // HTML tags go; an escaped mark leaves the mark; runs of spaces become one space
+  const withoutTags = withoutItalic.replace(/<[^>]+>/g, "");
+  const unescaped = withoutTags.replace(/\\([\\`*_{}[\]()#+\-.!,&'"|<>~])/g, "$1");
+  const singleSpaced = unescaped.replace(/[ \t]+/g, " ");
+
+  return singleSpaced.trim();
 }
 
 /** The cells of a pipe table row. */
 function cellsOf(row) {
-  return row
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split(/(?<!\\)\|/)
-    .map((cell) => cleanInline(cell.trim()));
+  const trimmedRow = row.trim();
+  const withoutFirstPipe = trimmedRow.replace(/^\|/, "");
+  const withoutEdgePipes = withoutFirstPipe.replace(/\|$/, "");
+  const rawCells = withoutEdgePipes.split(/(?<!\\)\|/);
+
+  const cells = [];
+  for (const rawCell of rawCells) {
+    const trimmedCell = rawCell.trim();
+    const cell = cleanInline(trimmedCell);
+    cells.push(cell);
+  }
+  return cells;
 }
 
 /** Remove front matter (--- … --- at the top) and HTML comments; return the lines, and the title
@@ -54,16 +65,27 @@ function cellsOf(row) {
 function splitFrontMatter(text) {
   let body = text.replace(/^\uFEFF/, "");
   const meta = {};
+
   const frontMatter = body.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(\r?\n|$)/);
   if (frontMatter) {
-    for (const line of frontMatter[1].split(/\r?\n/)) {
+    const frontMatterLines = frontMatter[1].split(/\r?\n/);
+    for (const line of frontMatterLines) {
       const pair = line.match(/^(title|author)\s*:\s*(.+?)\s*$/i);
-      if (pair) meta[pair[1].toLowerCase()] = pair[2].replace(/^["']|["']$/g, "");
+      if (pair) {
+        const field = pair[1].toLowerCase();
+        const valueWithoutQuotes = pair[2].replace(/^["']|["']$/g, "");
+        meta[field] = valueWithoutQuotes;
+      }
     }
     body = body.slice(frontMatter[0].length);
   }
+
   body = body.replace(/<!--[\s\S]*?-->/g, "");
-  return { lines: body.split(/\r?\n/), meta };
+  const lines = body.split(/\r?\n/);
+  return {
+    lines,
+    meta,
+  };
 }
 
 /**
@@ -75,19 +97,42 @@ function splitFrontMatter(text) {
 function paragraphLinesOf(lines) {
   const paragraphLines = [];
   let inFence = false;
+
   for (const line of lines) {
-    if (FENCE.test(line)) inFence = !inFence;
-    else if (
-      inFence ||
-      (line.trim() &&
-        !HEADING.test(line) &&
-        !TABLE_ROW.test(line) &&
-        !FOOTNOTE_DEF.test(line) &&
-        !HR.test(line) &&
-        !/^\s*!\[[^\]]*\]\([^)]*\)\s*$/.test(line))
-    )
-      paragraphLines.push(line.replace(QUOTE, "").replace(LIST_ITEM, ""));
+    if (FENCE.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+
+    // inside a fenced block every line counts; outside it, these do not
+    if (!inFence) {
+      const hasText = line.trim();
+      if (!hasText) {
+        continue;
+      }
+      if (HEADING.test(line)) {
+        continue;
+      }
+      if (TABLE_ROW.test(line)) {
+        continue;
+      }
+      if (FOOTNOTE_DEF.test(line)) {
+        continue;
+      }
+      if (HR.test(line)) {
+        continue;
+      }
+      const isOnlyAnImage = /^\s*!\[[^\]]*\]\([^)]*\)\s*$/.test(line);
+      if (isOnlyAnImage) {
+        continue;
+      }
+    }
+
+    const withoutQuoteMark = line.replace(QUOTE, "");
+    const withoutMarks = withoutQuoteMark.replace(LIST_ITEM, "");
+    paragraphLines.push(withoutMarks);
   }
+
   return paragraphLines;
 }
 
@@ -98,13 +143,23 @@ function paragraphLinesOf(lines) {
  */
 function titleOf(meta, headings) {
   let title = meta.title ?? null;
-  if (
-    !title &&
-    headings.length &&
-    headings[0][0] === 1 &&
-    headings.filter(([level]) => level === 1).length === 1
-  )
-    title = headings[0][1];
+
+  if (!title && headings.length) {
+    const firstHeading = headings[0];
+    if (firstHeading[0] === 1) {
+      let levelOneCount = 0;
+      for (const [level] of headings) {
+        if (level === 1) {
+          levelOneCount++;
+        }
+      }
+
+      if (levelOneCount === 1) {
+        title = firstHeading[1];
+      }
+    }
+  }
+
   return title;
 }
 
@@ -117,85 +172,170 @@ function titleOf(meta, headings) {
  */
 export function parseMarkdown(text, { name = "", key = null } = {}) {
   const { lines, meta } = splitFrontMatter(text);
-  const hardWrapped = isHardWrapped(paragraphLinesOf(lines));
+  const paragraphLines = paragraphLinesOf(lines);
+  const hardWrapped = isHardWrapped(paragraphLines);
 
   const builder = new BookBuilder();
-  const headings = []; // [level, text] in order
-  let pending = []; // the lines of the block being joined, not yet a block (hard-wrapped files)
+  // [level, text] in order
+  const headings = [];
+  // the lines of the block being joined, not yet a block (hard-wrapped files)
+  let pending = [];
+
   const flush = () => {
     builder.addParagraph(pending);
     pending = [];
   };
+
   /** A line of text: its URL images become figures after it, relative images are dropped. */
   const addTextLine = (raw, startsItem) => {
     const figures = [];
     const withoutImages = raw.replace(IMAGE, (_, alt, src) => {
-      if (FULL_URL.test(src)) figures.push({ src, label: alt.trim() || null });
+      if (FULL_URL.test(src)) {
+        const label = alt.trim() || null;
+        const figure = {
+          src,
+          label,
+        };
+        figures.push(figure);
+      }
       return "";
     });
     const cleaned = cleanInline(withoutImages);
-    if (startsItem) flush();
+
+    if (startsItem) {
+      flush();
+    }
+
     if (cleaned) {
-      if (!hardWrapped) builder.addText(plainSpoken(cleaned));
-      else {
+      if (!hardWrapped) {
+        const spoken = plainSpoken(cleaned);
+        builder.addText(spoken);
+      } else {
         pending.push(cleaned);
-        if (endsSentence(cleaned)) flush();
+        if (endsSentence(cleaned)) {
+          flush();
+        }
       }
     }
+
     if (figures.length) {
       flush();
-      for (const figure of figures) builder.addFigure({ ...figure, kind: "image" });
+      for (const figure of figures) {
+        const imageFigure = {
+          ...figure,
+          kind: "image",
+        };
+        builder.addFigure(imageFigure);
+      }
     }
   };
 
   let quoting = false;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+
     if (FENCE.test(line)) {
       flush();
-      for (i++; i < lines.length && !FENCE.test(lines[i]); i++)
-        if (lines[i].trim()) builder.addText(plainSpoken(lines[i].trim()));
+      for (i++; i < lines.length && !FENCE.test(lines[i]); i++) {
+        const fencedLine = lines[i].trim();
+        if (fencedLine) {
+          const spoken = plainSpoken(fencedLine);
+          builder.addText(spoken);
+        }
+      }
       continue;
     }
-    if (!line.trim() || HR.test(line)) {
+
+    const isBlankLine = !line.trim();
+    if (isBlankLine || HR.test(line)) {
       flush();
       quoting = false;
       continue;
     }
+
     const headingMatch = line.match(HEADING);
     if (headingMatch) {
       flush();
-      const words = cleanInline(headingMatch[2].replace(IMAGE, ""));
-      const blockIndex = builder.addHeading(plainSpoken(words), headingMatch[1].length);
-      if (blockIndex !== null) headings.push([headingMatch[1].length, words]);
+
+      const level = headingMatch[1].length;
+      const wordsWithoutImages = headingMatch[2].replace(IMAGE, "");
+      const words = cleanInline(wordsWithoutImages);
+
+      const spoken = plainSpoken(words);
+      const blockIndex = builder.addHeading(spoken, level);
+      if (blockIndex !== null) {
+        headings.push([level, words]);
+      }
       continue;
     }
+
     if (FOOTNOTE_DEF.test(line)) {
-      flush(); // base D-38: neither read nor shown, with its indented continuation lines
-      while (i + 1 < lines.length && /^(\s{2,}|\t)\S/.test(lines[i + 1])) i++;
-      continue;
-    }
-    if (TABLE_ROW.test(line) && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1])) {
+      // base D-38: neither read nor shown, with its indented continuation lines
       flush();
-      const rows = [cellsOf(line)];
-      for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) rows.push(cellsOf(lines[i]));
-      i--; // the for adds 1
-      builder.addFigure({ kind: "table", table: rows, label: null });
+      while (i + 1 < lines.length) {
+        const continuesTheNote = /^(\s{2,}|\t)\S/.test(lines[i + 1]);
+        if (!continuesTheNote) {
+          break;
+        }
+        i++;
+      }
       continue;
     }
+
+    // a table: a row with a rule line right under it
+    const isTableRow = TABLE_ROW.test(line);
+    const hasNextLine = i + 1 < lines.length;
+    if (isTableRow && hasNextLine) {
+      const nextIsRule = TABLE_RULE.test(lines[i + 1]);
+      if (nextIsRule) {
+        flush();
+
+        const headerCells = cellsOf(line);
+        const rows = [headerCells];
+        for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) {
+          const cells = cellsOf(lines[i]);
+          rows.push(cells);
+        }
+        i--; // the for adds 1
+
+        const tableFigure = {
+          kind: "table",
+          table: rows,
+          label: null,
+        };
+        builder.addFigure(tableFigure);
+        continue;
+      }
+    }
+
     const isQuote = QUOTE.test(line);
-    if (isQuote !== quoting) flush();
+    if (isQuote !== quoting) {
+      flush();
+    }
     quoting = isQuote;
-    const body = isQuote ? line.replace(QUOTE, "") : line;
+
+    let body = line;
+    if (isQuote) {
+      body = line.replace(QUOTE, "");
+    }
+
     const isItem = LIST_ITEM.test(body);
-    addTextLine(isItem ? body.replace(LIST_ITEM, "") : body, isItem);
+    let words = body;
+    if (isItem) {
+      words = body.replace(LIST_ITEM, "");
+    }
+    addTextLine(words, isItem);
   }
   flush();
 
-  return builder.build({
+  const title = titleOf(meta, headings) || baseName(name);
+  const author = meta.author ?? null;
+  const bookFields = {
     key,
-    title: titleOf(meta, headings) || baseName(name),
-    author: meta.author ?? null,
+    title,
+    author,
     format: "markdown",
-  });
+  };
+  return builder.build(bookFields);
 }

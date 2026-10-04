@@ -15,69 +15,133 @@ let state = null;
 /** What is kept, read from the browser's storage at the first call; anything missing or
  * unreadable there is its default. */
 function load() {
-  if (state) return state;
+  if (state) {
+    return state;
+  }
+
   let saved = null;
   try {
-    saved = JSON.parse(localStorage.getItem(KEY) || "null");
+    const text = localStorage.getItem(KEY) || "null";
+    saved = JSON.parse(text);
   } catch {
     saved = null;
   }
+
+  const savedSettings = saved && saved.settings;
+  const settingsOverDefaults = { ...DEFAULTS, ...savedSettings };
+
+  const savedPositions = saved && saved.positions;
+
+  let savedCount = null;
+  if (saved && Number.isFinite(saved.count)) {
+    savedCount = saved.count;
+  }
+
+  const savedLastBook = saved && saved.lastBook;
+
   state = {
-    settings: { ...DEFAULTS, ...(saved && saved.settings) },
-    positions: (saved && saved.positions) || {},
-    count: (saved && Number.isFinite(saved.count) && saved.count) || 0,
-    lastBook: (saved && saved.lastBook) || null,
+    settings: settingsOverDefaults,
+    positions: savedPositions || {},
+    count: savedCount || 0,
+    lastBook: savedLastBook || null,
   };
+
   // a mode that is neither of the two (a damaged entry) is the default
-  if (!["fragments", "score"].includes(state.settings.melody))
+  const modeIsKnown = ["fragments", "score"].includes(state.settings.melody);
+  if (!modeIsKnown) {
     state.settings.melody = DEFAULTS.melody;
+  }
+
   return state;
 }
 
 /** Write everything to the browser's storage; a browser that refuses is ignored. */
 function save() {
   try {
-    localStorage.setItem(KEY, JSON.stringify(state));
+    const text = JSON.stringify(state);
+    localStorage.setItem(KEY, text);
   } catch {
     // private browsing or a full disk: reading goes on, nothing is kept (§5.4)
   }
 }
 
 /** The settings: { speed, voice, music, sfx }. */
-export const settings = () => load().settings;
+export function settings() {
+  const kept = load();
+  return kept.settings;
+}
+
 /** Change one setting and write it at once. */
 export function setSetting(name, value) {
-  load().settings[name] = value;
+  const kept = load();
+  kept.settings[name] = value;
+
   save();
 }
 
 /** The one explosion count of the user (D-105). Written at once, so a closed tab keeps it
  * (D-88). */
-export const count = () => load().count;
+export function count() {
+  const kept = load();
+  return kept.count;
+}
+
 export function setCount(shot) {
-  load().count = shot;
+  const kept = load();
+  kept.count = shot;
+
   save();
 }
 
 /** The place in a book: { block, sentence, bossHp, chars, sentences, blocks, title, at } or
  * null. `at` is when it was last written (an ISO time). */
-export const position = (key) => load().positions[key] || null;
+export function position(key) {
+  const kept = load();
+  const place = kept.positions[key];
+
+  return place || null;
+}
+
 /** Write some fields of a book's place; the fields not given stay as they are kept. */
 export function setPosition(key, place) {
   const kept = load();
-  kept.positions[key] = { ...(kept.positions[key] || {}), ...place, at: new Date().toISOString() };
+
+  const placeBefore = kept.positions[key] || {};
+  const writtenAt = new Date().toISOString();
+
+  kept.positions[key] = {
+    ...placeBefore,
+    ...place,
+    at: writtenAt,
+  };
   kept.lastBook = key;
+
   save();
 }
+
 /** Forget a book's place (「一覧から消す」). */
 export function forget(key) {
-  delete load().positions[key];
+  const kept = load();
+  delete kept.positions[key];
+
   save();
 }
 
 /** The books read before, the latest first: [{ key, ...position }] (「続きから」). */
 export function recent() {
-  return Object.entries(load().positions)
-    .map(([key, place]) => ({ key, ...place }))
-    .sort((one, other) => String(other.at).localeCompare(String(one.at)));
+  const kept = load();
+
+  const places = [];
+  for (const [key, place] of Object.entries(kept.positions)) {
+    const withKey = { key, ...place };
+    places.push(withKey);
+  }
+
+  places.sort((one, other) => {
+    const otherAt = String(other.at);
+    const oneAt = String(one.at);
+    return otherAt.localeCompare(oneAt);
+  });
+
+  return places;
 }

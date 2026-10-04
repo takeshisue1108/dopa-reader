@@ -6,13 +6,28 @@ import { SLOTS_PER_BAR } from "./bars.js";
 /** The length of each slot of the score at the speed 1.0, in seconds: an eighth note at the tempo
  * of its bar. `tempo` is tempo.json: { bars, tempo: [{ bar (from 1), bpm }] }. */
 export function slotLengths(tempoMap) {
-  const lengths = new Float64Array(tempoMap.bars * SLOTS_PER_BAR);
-  const changes = [...tempoMap.tempo].sort((a, b) => a.bar - b.bar);
+  const slotCount = tempoMap.bars * SLOTS_PER_BAR;
+  const lengths = new Float64Array(slotCount);
+
+  const changes = [...tempoMap.tempo];
+  changes.sort((a, b) => a.bar - b.bar);
+
   for (let bar = 0; bar < tempoMap.bars; bar++) {
+    // the tempo in force in the bar: that of the last change at or before it
     let bpm = changes[0].bpm;
-    for (const entry of changes) if (entry.bar - 1 <= bar) bpm = entry.bpm;
-    lengths.fill(30 / bpm, bar * SLOTS_PER_BAR, (bar + 1) * SLOTS_PER_BAR);
+    for (const entry of changes) {
+      const changeBar = entry.bar - 1;
+      if (changeBar <= bar) {
+        bpm = entry.bpm;
+      }
+    }
+
+    const slotSeconds = 30 / bpm;
+    const firstSlot = bar * SLOTS_PER_BAR;
+    const slotAfterLast = (bar + 1) * SLOTS_PER_BAR;
+    lengths.fill(slotSeconds, firstSlot, slotAfterLast);
   }
+
   return lengths;
 }
 
@@ -33,18 +48,32 @@ export function sentenceSlots(
   speed = 1,
   scheduledBars = [],
 ) {
-  const times = new Float64Array(barCount * SLOTS_PER_BAR + 1);
+  const slotCount = barCount * SLOTS_PER_BAR;
+  const times = new Float64Array(slotCount + 1);
+
   let nextBarAt = startTime;
   for (let barIndex = 0; barIndex < barCount; barIndex++) {
     const line = scheduledBars[barIndex];
-    const start = line ? line.t : nextBarAt;
-    const slotLength = line
-      ? line.slot
-      : lengths[(startSlot + barIndex * SLOTS_PER_BAR) % lengths.length] / speed;
-    for (let slotInBar = 0; slotInBar < SLOTS_PER_BAR; slotInBar++)
-      times[barIndex * SLOTS_PER_BAR + slotInBar] = start + slotInBar * slotLength;
+
+    let start;
+    let slotLength;
+    if (line) {
+      start = line.t;
+      slotLength = line.slot;
+    } else {
+      const scoreSlot = (startSlot + barIndex * SLOTS_PER_BAR) % lengths.length;
+      start = nextBarAt;
+      slotLength = lengths[scoreSlot] / speed;
+    }
+
+    const firstEntry = barIndex * SLOTS_PER_BAR;
+    for (let slotInBar = 0; slotInBar < SLOTS_PER_BAR; slotInBar++) {
+      times[firstEntry + slotInBar] = start + slotInBar * slotLength;
+    }
+
     nextBarAt = start + SLOTS_PER_BAR * slotLength;
   }
-  times[barCount * SLOTS_PER_BAR] = nextBarAt;
+
+  times[slotCount] = nextBarAt;
   return times;
 }
